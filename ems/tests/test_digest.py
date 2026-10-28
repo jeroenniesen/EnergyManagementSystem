@@ -1,7 +1,9 @@
 """The weekly digest (BACKLOG B-58 / roadmap P2 "the Sunday read"): build_digest is pure — canned
 finance rows / flows / scores / audit rows / advisor advice in, the digest dict out. See
 ems/digest.py for the exact audit-string patterns these tests exercise."""
-from ems.digest import build_digest, explain_negative_day
+from datetime import UTC, datetime, timedelta
+
+from ems.digest import build_digest, explain_negative_day, latest_solar_confidence_apply
 
 WEEK_LABEL = "Week of 2026-07-06"
 
@@ -445,3 +447,99 @@ def test_build_digest_full_shape():
         "days_total": 7,
         "negative_days": [{"date": "2026-07-09", "saved_eur": -0.1, "drivers": []}],
     }
+
+
+def _advice(recommended: float, current: float, *, stable: bool = True) -> dict:
+    return {
+        "recommended_pct": recommended,
+        "current_pct": current,
+        "delta_pct": recommended - current,
+        "n_slots": 60,
+        "stable": stable,
+    }
+
+
+def _digest_with(advice: dict, **kw):
+    return build_digest(
+        finance_rows=FULL_WEEK, flows=FLOWS, scores=SCORES, audit_rows=[],
+        advice=advice, week_label=WEEK_LABEL, export_price_model="spot_minus_tax", **kw,
+    )
+
+
+# --- #337 / F-36: one-click solar apply + hysteresis -------------------------------------------
+
+def test_solar_tweak_apply_payload_is_exactly_planner_solar_confidence():
+    d = _digest_with(_advice(75.0, 65.0))
+    assert d["tweak_apply"] == {
+        "key": "planner.solar_confidence",
+        "value": 75.0,
+        "current": 65.0,
+    }
+    assert "control.dry_run" not in d["tweak_apply"]
+    assert "control.operational" not in d["tweak_apply"]
+
+
+def test_delta_below_5pp_offers_no_apply_even_when_advice_oscillates():
+    for recommended in (82.0, 78.0, 84.0, 76.0, 80.0):
+        d = _digest_with(_advice(recommended, 80.0))
+        assert "tweak_apply" not in d
+        assert d["tweak"] is None
+
+
+def test_unstable_oscillation_has_no_apply_button():
+    d = _digest_with(_advice(75.0, 65.0, stable=False))
+    assert "tweak_apply" not in d
+    assert d["tweak"].startswith("Advisor recommendation unstable")
+
+
+def test_hysteresis_suppresses_oscillating_advice_for_seven_days_after_apply():
+    applied = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    now = applied + timedelta(days=6, hours=23)
+    swings = ((90.0, 70.0), (50.0, 70.0), (80.0, 50.0), (60.0, 85.0), (75.0, 70.0))
+    for recommended, current in swings:
+        d = _digest_with(
+            _advice(recommended, current),
+            now=now, solar_confidence_applied_at=applied,
+        )
+        assert "tweak_apply" not in d
+        assert d["tweak"] is None or "solar confidence" not in d["tweak"].lower()
+
+
+def test_hysteresis_lifts_at_exactly_seven_days():
+    applied = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    now = applied + timedelta(days=7)
+    d = _digest_with(
+        _advice(70.0, 80.0), now=now, solar_confidence_applied_at=applied,
+    )
+    assert d["tweak_apply"]["key"] == "planner.solar_confidence"
+    assert d["tweak_apply"]["value"] == 70.0
+
+
+def test_hysteresis_does_not_hide_the_export_model_reminder():
+    applied = datetime(2026, 10, 10, 8, 0, tzinfo=UTC)
+    now = applied + timedelta(days=1)
+    d = build_digest(
+        finance_rows=FULL_WEEK, flows=FLOWS, scores=SCORES, audit_rows=[],
+        advice=_advice(70.0, 80.0), week_label="Week of 2026-10-12",
+        export_price_model="net_metering", now=now, solar_confidence_applied_at=applied,
+    )
+    assert d["tweak"].startswith("Review your export model before 2027")
+    assert "tweak_apply" not in d
+
+
+def test_latest_solar_confidence_apply_uses_the_newest_config_change():
+    older = datetime(2026, 10, 1, 8, 0, tzinfo=UTC)
+    newer = datetime(2026, 10, 3, 8, 0, tzinfo=UTC)
+    rows = [
+        {"ts": older.isoformat(), "category": "config_change",
+         "summary": "Changed 1 setting(s): planner.solar_confidence",
+         "detail": {"keys": ["planner.solar_confidence"]}},
+        {"ts": newer.isoformat(), "category": "battery_decision",
+         "summary": "planner.solar_confidence mentioned in a decision", "detail": {}},
+        {"ts": (newer + timedelta(hours=1)).isoformat(), "category": "config_change",
+         "summary": "Changed 1 setting(s): ui.theme", "detail": {"keys": ["ui.theme"]}},
+        {"ts": newer.isoformat(), "category": "config_change",
+         "summary": "Changed 1 setting(s): planner.solar_confidence",
+         "detail": {"keys": ["planner.solar_confidence"]}},
+    ]
+    assert latest_solar_confidence_apply(rows) == newer

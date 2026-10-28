@@ -5,11 +5,12 @@
 // of Insights' own day/week/month/year period picker — this is always a WEEK, with its own small
 // ‹ › stepper (mirrors Insights' period-nav). Collapsible to one line (the headline itself, like
 // the Advanced disclosure toggle) so it never dominates a repeat visit.
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
+import { digestSolarSettingsBody } from "./applyLive";
 import { apiFetch } from "./auth";
 import { eur } from "./format";
-import { digestEurNl, WEEK_DIGEST_NEGATIVE_DAY } from "./labels";
+import { WEEK_DIGEST_APPLY, digestEurNl, WEEK_DIGEST, WEEK_DIGEST_NEGATIVE_DAY } from "./labels";
 
 type BestDay = { date: string; saved_eur: number } | null;
 
@@ -30,6 +31,8 @@ type Digest = {
   days_measured: number;
   days_total: number;
   negative_days?: NegativeDay[];
+  /** Present only when the solar-confidence nudge is actionable (#337). */
+  tweak_apply?: { key: string; value: number; current: number } | null;
 };
 
 // The trailing YYYY-MM-DD in a "Week of YYYY-MM-DD" label — mirrors ems/digest.py's own parsing,
@@ -47,15 +50,22 @@ function shiftWeek(monday: string, dir: number): string {
   ).padStart(2, "0")}`;
 }
 
-export function WeekDigest() {
+export function WeekDigest({ canOperate = true }: { canOperate?: boolean } = {}) {
   const [anchor, setAnchor] = useState<string>(""); // "" = let the server pick the default week
   const [digest, setDigest] = useState<Digest | null>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [fetchGen, setFetchGen] = useState(0);
   const [open, setOpen] = useState(true);
   const [openLossDay, setOpenLossDay] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+  const [applyState, setApplyState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+
+  const retry = useCallback(() => setFetchGen((g) => g + 1), []);
 
   useEffect(() => {
     let alive = true;
+    setLoading(true);
     setError(false);
     const url = anchor ? `/api/digest?week=${anchor}` : "/api/digest";
     apiFetch(url)
@@ -63,16 +73,58 @@ export function WeekDigest() {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
-      .then((v: Digest) => alive && setDigest(v))
-      .catch(() => alive && setError(true));
+      .then((v: Digest) => {
+        if (alive) {
+          setDigest(v);
+          setError(false);
+        }
+      })
+      .catch(() => {
+        if (alive) {
+          setDigest(null);
+          setError(true);
+        }
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
     return () => {
       alive = false;
     };
-  }, [anchor]);
+  }, [anchor, fetchGen, reload]);
 
-  // Best-effort like the other Insights sub-panels (FinanceSection, HeatingAdvice): a digest
-  // hiccup never blocks the scores/flows/finance the rest of Insights already shows.
-  if (error || !digest) return null;
+  if (loading && !digest) {
+    return (
+      <section className="week-digest" data-testid="week-digest" aria-label="Your week">
+        <div className="week-digest-head">
+          <span className="metric-label" data-testid="week-digest-section-title">
+            {WEEK_DIGEST.sectionTitle}
+          </span>
+        </div>
+        <span className="skel-line skel-line-lg" data-testid="week-digest-loading" aria-hidden="true" />
+      </section>
+    );
+  }
+
+  if (error && !digest) {
+    return (
+      <section className="week-digest" data-testid="week-digest" aria-label="Your week">
+        <div className="week-digest-head">
+          <span className="metric-label" data-testid="week-digest-section-title">
+            {WEEK_DIGEST.sectionTitle}
+          </span>
+        </div>
+        <div className="error" role="alert" data-testid="week-digest-error">
+          <p>{WEEK_DIGEST.loadError}</p>
+          <button type="button" className="btn secondary" data-testid="week-digest-retry" onClick={retry}>
+            {WEEK_DIGEST.retry}
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  if (!digest) return null;
 
   const monday = mondayOf(digest.week_label);
   const step = (dir: number) => {
@@ -174,6 +226,51 @@ export function WeekDigest() {
             <p className="advisor-hint week-digest-tweak" data-testid="week-digest-tweak">
               {digest.tweak}
             </p>
+          )}
+
+          {digest.tweak_apply && digestSolarSettingsBody(digest.tweak_apply) && (
+            <div className="week-digest-apply" data-testid="week-digest-apply">
+              <button
+                type="button"
+                className="btn-primary"
+                data-testid="week-digest-apply-solar"
+                disabled={!canOperate || applyState === "saving"}
+                onClick={() => {
+                  if (!canOperate || applyState === "saving") return;
+                  const payload = digestSolarSettingsBody(digest.tweak_apply);
+                  if (!payload) return;
+                  setApplyState("saving");
+                  apiFetch("/api/settings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
+                  })
+                    .then((r) => {
+                      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                      setApplyState("saved");
+                      setReload((n) => n + 1);
+                    })
+                    .catch(() => setApplyState("error"));
+                }}
+              >
+                {WEEK_DIGEST_APPLY.button(Math.round(digest.tweak_apply.value))}
+              </button>
+              {!canOperate && (
+                <p className="advisor-hint" data-testid="week-digest-apply-readonly">
+                  {WEEK_DIGEST_APPLY.readonly}
+                </p>
+              )}
+              {canOperate && applyState === "saved" && (
+                <p className="advisor-hint" role="status" data-testid="week-digest-apply-saved">
+                  {WEEK_DIGEST_APPLY.saved}
+                </p>
+              )}
+              {applyState === "error" && (
+                <p className="fin-caveat" role="alert" data-testid="week-digest-apply-error">
+                  {WEEK_DIGEST_APPLY.failed}
+                </p>
+              )}
+            </div>
           )}
 
           {negativeDays.length > 0 && (

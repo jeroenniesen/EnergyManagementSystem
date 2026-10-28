@@ -55,6 +55,7 @@ class Plan:
     input_snapshot: PlannerInputSnapshot | None = None
     planner_mode: str | None = None   # rule_based | ml | advisory (requested producer mode)
     buy_pool: BuyPoolInfo | None = None  # #315: why EMS did / did not grid-buy (explain-only)
+    solar_basis: str | None = None  # #330: 'p10' real P10, 'p50' explicit, else None
 
     def intent_at(self, now: datetime) -> PlanSlot | None:
         """The slot covering `now`, or None if `now` is outside the plan horizon. Uses each slot's

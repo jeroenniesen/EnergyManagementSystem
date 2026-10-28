@@ -1,7 +1,9 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
 
 import { mockInsightsDensity, waitForInsightsDensity } from "./density-fixtures";
 import { mockRoute } from "./route-mock";
+import { guardRoute, isStaleRouteError } from "./stale-route-helper";
 
 const DASHBOARD_BUDGET = {
   hero: 1,
@@ -2581,42 +2583,58 @@ test.describe("EMS dashboard", () => {
       },
     ];
     let current = cases[0];
-    await page.route("**/api/dashboard", async (route) => {
-      const response = await route.fetch();
-      const dashboard = await response.json();
-      await route.fulfill({
-        response,
-        json: { ...dashboard, status: { ...dashboard.status, ...current.status } },
-      });
-    });
-    await page.route("**/api/decision", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          intent: "allow_self_consumption",
-          desired_mode: "auto",
-          applied: false,
-          outcome: "dry_run",
-          reason: current.title ?? "Watching only — not commanding.",
-        }),
-      });
-    });
-    for (const row of cases) {
-      current = row;
-      await page.goto("/");
-      const badge = page.getByTestId("run-mode-badge");
-      await expect(badge).toHaveText(row.text);
-      await expect(badge).toHaveAttribute("data-state", row.state);
-      if (row.cause) await expect(badge).toHaveAttribute("data-cause", row.cause);
-      else await expect(badge).not.toHaveAttribute("data-cause");
-      await expect(badge).not.toContainText("Stuurt batterij");
-      if (row.state !== "yes") await expect(badge).not.toContainText("Live schrijven: JA");
-      if (row.state === "starting") {
-        await expect(badge).not.toContainText("Instellingen (Alleen kijken)");
+    try {
+      // #378: 10× goto while the app polls /api/dashboard. A navigation or page
+      // close between route.fetch() and response.json() disposes the APIResponse.
+      await page.route("**/api/dashboard", (route) => guardRoute(route, async () => {
+        const response = await route.fetch();
+        const dashboard = await response.json();
+        await route.fulfill({
+          response,
+          json: { ...dashboard, status: { ...dashboard.status, ...current.status } },
+        });
+      }));
+      await page.route("**/api/decision", (route) => guardRoute(route, async () => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            intent: "allow_self_consumption",
+            desired_mode: "auto",
+            applied: false,
+            outcome: "dry_run",
+            reason: current.title ?? "Watching only — not commanding.",
+          }),
+        });
+      }));
+      for (const row of cases) {
+        current = row;
+        const dashboardReady = page.waitForResponse(
+          (response) => new URL(response.url()).pathname === "/api/dashboard",
+        );
+        await page.goto("/");
+        await dashboardReady;
+        const badge = page.getByTestId("run-mode-badge");
+        await expect(badge).toHaveText(row.text);
+        await expect(badge).toHaveAttribute("data-state", row.state);
+        if (row.cause) await expect(badge).toHaveAttribute("data-cause", row.cause);
+        else await expect(badge).not.toHaveAttribute("data-cause");
+        await expect(badge).not.toContainText("Stuurt batterij");
+        if (row.state !== "yes") await expect(badge).not.toContainText("Live schrijven: JA");
+        if (row.state === "starting") {
+          await expect(badge).not.toContainText("Instellingen (Alleen kijken)");
+        }
+        if (row.title) await expect(badge).toHaveAttribute("title", row.title);
+        await expect(page.getByTestId("run-mode-reason")).toHaveCount(0);
       }
-      if (row.title) await expect(badge).toHaveAttribute("title", row.title);
-      await expect(page.getByTestId("run-mode-reason")).toHaveCount(0);
+    } finally {
+      // Drop in-flight handlers before the page closes, so a disposed poll
+      // cannot reject into the next test (#378, dry-run panel).
+      try {
+        await page.unrouteAll({ behavior: "ignoreErrors" });
+      } catch (error) {
+        if (!isStaleRouteError(error)) throw error;
+      }
     }
   });
 
@@ -2739,6 +2757,84 @@ test.describe("EMS dashboard", () => {
     // Default is Auto -> the Auto option is selected and the resolved season is shown.
     await expect(page.getByTestId("strategy-auto")).toHaveAttribute("aria-checked", "true");
     await expect(page.getByTestId("strategy-active")).toContainText("Auto");
+  });
+
+  test("season hold chip shows 2/3 and force-switches to solar-first (#345)", async ({ page }) => {
+    let mode = "auto";
+    const posted: string[] = [];
+    const hold = { committed: "winter", pending: "summer", count: 2, days: 3 };
+    await page.route("**/api/strategy", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          mode,
+          active: mode === "summer" ? "summer" : "winter",
+          auto: mode === "auto",
+          summary: mode === "summer"
+            ? "Solar-first — fill the battery from your panels."
+            : "Arbitrage — charge in the cheapest hours.",
+          reason: "Holding price-smart.",
+          grid_topup: true,
+          max_topup_price: 0.3,
+          hysteresis: mode === "auto"
+            ? hold
+            : { committed: mode === "summer" ? "summer" : "winter", pending: null, count: 0, days: 3 },
+        }),
+      }),
+    );
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "POST") {
+        const body = JSON.parse(route.request().postData() || "{}");
+        if (typeof body["strategy.mode"] === "string") {
+          mode = body["strategy.mode"];
+          posted.push(mode);
+        }
+        await route.fulfill({ status: 200, contentType: "application/json", body: "{\"values\":{}}" });
+      } else {
+        await route.continue();
+      }
+    });
+    await page.goto("/");
+    await openMoreNest(page, "strategy");
+    const chip = page.getByTestId("strategy-hold-chip");
+    await expect(chip).toHaveText("Winter vasthouden 2/3");
+    await expect(chip).toHaveAttribute("role", "status");
+    const force = page.getByTestId("strategy-force-summer");
+    await expect(force).toHaveText("Nu solar-first");
+    await expect(page.getByTestId("strategy-back-auto")).toHaveCount(0);
+
+    async function axeHold() {
+      await page.evaluate(() => {
+        for (const anim of document.getAnimations()) anim.finish();
+      });
+      const results = await new AxeBuilder({ page }).include(".strategy-hold").analyze();
+      expect(results.violations).toEqual([]);
+    }
+    for (const scheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await expect(page.locator("html")).toHaveAttribute("data-theme", scheme);
+      await axeHold();
+    }
+
+    await force.focus();
+    await page.keyboard.press("Enter");
+    const back = page.getByTestId("strategy-back-auto");
+    await expect(back).toBeVisible();
+    await expect(back).toHaveText("Terug naar Auto");
+    await expect(chip).toHaveCount(0);
+    await expect(page.getByTestId("strategy-summer")).toHaveAttribute("aria-checked", "true");
+    for (const scheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await expect(page.locator("html")).toHaveAttribute("data-theme", scheme);
+      await axeHold();
+    }
+
+    await back.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("strategy-auto")).toHaveAttribute("aria-checked", "true");
+    await expect(chip).toHaveText("Winter vasthouden 2/3");
+    expect(posted).toEqual(["summer", "auto"]);
   });
 
   test("strategy card switches the running strategy", async ({ page }) => {
@@ -4588,5 +4684,218 @@ test.describe("EMS dashboard", () => {
       await page.getByTestId("nav-dashboard").click();
       await expect(page.getByTestId("export-model-banner")).toBeHidden();
     });
+  });
+});
+
+// #337 / F-36 + F-38 — appended. One-click digest apply and what-if live confirm both POST
+// /api/settings (mocked here so the shared e2e DB is never written).
+const APPLY_REPORT = {
+  period: "day",
+  window_start: "2026-06-28T00:00:00+00:00",
+  window_end: "2026-06-29T00:00:00+00:00",
+  label: "2026-06-28",
+  partial: false,
+  flows: {
+    date: "2026-06-28", has_data: true, partial: false,
+    solar_to_home: 4, solar_to_car: 1, solar_to_battery: 3, solar_to_grid: 2,
+    grid_to_home: 1, grid_to_car: 0.5, grid_to_battery: 0.5,
+    battery_to_home: 2.5, battery_to_car: 0, battery_to_grid: 0,
+    solar_kwh: 10, grid_import_kwh: 2, grid_export_kwh: 2,
+    battery_charge_kwh: 3.5, battery_discharge_kwh: 2.5, home_kwh: 7.5, car_kwh: 1.5,
+    self_sufficiency_pct: 80, solar_self_consumption_pct: 80, car_guard_leak_kwh: 0,
+  },
+  scores: [
+    { key: "self_consumption", label: "Self-consumption", value: 80, raw: 80, unit: "%",
+      explanation: "Kept 80% of your solar on-site." },
+  ],
+};
+
+const APPLY_DIGEST = {
+  week_label: "Week of 2026-06-22",
+  saved_eur: 12.34,
+  best_day: null,
+  self_sufficiency_pct: 78,
+  solar_kwh: 24.5,
+  co2_avoided_note: null,
+  actions: { mode_switches: 1, negative_soaks: 0, overrides: 0 },
+  tweak: "Apply the advisor suggestion — set solar confidence to 70% (from 80%).",
+  tweak_apply: { key: "planner.solar_confidence", value: 70, current: 80 },
+  headline: "You saved €12.34 this week. One tweak worth a look below.",
+  days_measured: 7,
+  days_total: 7,
+};
+
+const APPLY_SETTINGS = {
+  schema: [
+    { key: "planner.solar_confidence", label: "Solar forecast confidence", type: "number" },
+    { key: "planner.negative_price_soak", label: "Charge on negative prices", type: "bool" },
+  ],
+  values: {
+    "planner.solar_confidence": 80,
+    "planner.negative_price_soak": false,
+    "control.dry_run": true,
+    "control.operational": false,
+    "prices.export_price_model": "spot_minus_tax",
+    "prices.export_model_confirmed": true,
+    "ui.theme": "auto",
+  },
+};
+
+test.describe("#337 one-click apply (F-36, F-38)", () => {
+  test("Pas X% toe posts exactly planner.solar_confidence", async ({ page }) => {
+    const posts: { url: string; body: unknown; header: string | undefined }[] = [];
+    await page.route("**/api/digest**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify(APPLY_DIGEST),
+      }),
+    );
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "POST") {
+        posts.push({
+          url: route.request().url(),
+          body: JSON.parse(route.request().postData() || "{}"),
+          header: route.request().headers()["x-ems-whatif-apply"],
+        });
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({ values: APPLY_SETTINGS.values, restart_required: false }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify(APPLY_SETTINGS),
+      });
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const button = page.getByTestId("week-digest-apply-solar");
+    await expect(button).toBeEnabled();
+    await expect(button).toHaveText("Pas 70% toe");
+    await button.click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0].url).toContain("/api/settings");
+    expect(posts[0].body).toEqual({ "planner.solar_confidence": 70 });
+    expect(posts[0].header).toBeUndefined();
+    expect(posts[0].body).not.toHaveProperty("control.dry_run");
+    expect(posts[0].body).not.toHaveProperty("control.operational");
+  });
+
+  test("Gebruik deze knoppen live shows old → new and posts only after confirm", async ({ page }) => {
+    const posts: { body: unknown; header: string | undefined }[] = [];
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify(APPLY_REPORT),
+      }),
+    );
+    await page.route("**/api/whatif", async (route) => {
+      const req = JSON.parse(route.request().postData() || "{}");
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          simulation: true,
+          days: req.days ?? 14,
+          days_used: 14,
+          days_skipped: 0,
+          overrides: req.overrides,
+          baseline: { cost_eur: 24.2 },
+          variant: { cost_eur: 23.0 },
+          delta_eur: 1.2,
+          per_day: [],
+          note: "saved",
+        }),
+      });
+    });
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "POST") {
+        posts.push({
+          body: JSON.parse(route.request().postData() || "{}"),
+          header: route.request().headers()["x-ems-whatif-apply"],
+        });
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({ values: APPLY_SETTINGS.values, restart_required: false }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify(APPLY_SETTINGS),
+      });
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await page.getByTestId("whatif-preset-cautious-forecast").click();
+    await expect(page.getByTestId("whatif-verdict")).toBeVisible();
+    await page.getByTestId("whatif-apply-live").click();
+    const dialog = page.getByTestId("whatif-apply-dialog");
+    await expect(dialog).toBeVisible();
+    await expect(page.getByTestId("whatif-apply-diff-planner.solar_confidence"))
+      .toContainText("80 → 60");
+    expect(posts).toEqual([]);
+    await page.getByTestId("whatif-apply-cancel").click();
+    await expect(dialog).toHaveCount(0);
+    expect(posts).toEqual([]);
+    await page.getByTestId("whatif-apply-live").click();
+    await expect(dialog).toBeVisible();
+    await page.getByTestId("whatif-apply-confirm").click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0].body).toEqual({ "planner.solar_confidence": 60 });
+    expect(posts[0].header).toBe("1");
+    expect(posts[0].body).not.toHaveProperty("control.dry_run");
+    expect(posts[0].body).not.toHaveProperty("control.operational");
+    await expect(page.getByTestId("whatif-apply-saved")).toBeVisible();
+  });
+
+  test("a reader gets both apply controls disabled, with a reason", async ({ page }) => {
+    const posts: unknown[] = [];
+    await page.route("**/api/auth", async (route) => {
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          required: true,
+          authenticated: true,
+          onboarding_needed: false,
+          user: { username: "reader-e2e", role: "reader" },
+          shared_token_required: false,
+        }),
+      });
+    });
+    await page.route("**/api/digest**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify(APPLY_DIGEST),
+      }),
+    );
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify(APPLY_REPORT),
+      }),
+    );
+    await page.route("**/api/whatif", async (route) => {
+      const req = JSON.parse(route.request().postData() || "{}");
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          simulation: true, days: 14, days_used: 14, days_skipped: 0,
+          overrides: req.overrides, baseline: { cost_eur: 1 }, variant: { cost_eur: 1 },
+          delta_eur: 0, per_day: [], note: "same",
+        }),
+      });
+    });
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "POST") posts.push(route.request().postData());
+      await route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify(APPLY_SETTINGS),
+      });
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const digestBtn = page.getByTestId("week-digest-apply-solar");
+    await expect(digestBtn).toBeDisabled();
+    await expect(page.getByTestId("week-digest-apply-readonly")).toBeVisible();
+    await page.getByTestId("whatif-preset-cautious-forecast").click();
+    const liveBtn = page.getByTestId("whatif-apply-live");
+    await expect(liveBtn).toBeDisabled();
+    await expect(page.getByTestId("whatif-apply-readonly")).toBeVisible();
+    await expect(page.getByTestId("whatif-apply-dialog")).toHaveCount(0);
+    expect(posts).toEqual([]);
   });
 });

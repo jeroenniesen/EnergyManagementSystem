@@ -60,6 +60,42 @@ WHATIF_ALLOWED_KEYS: tuple[str, ...] = (
     "strategy.summer_max_topup_price",
 )
 
+# Arming floors. The live-apply button must never be able to write these, even if a future
+# edit adds them to WHATIF_ALLOWED_KEYS by mistake (#337 / F-38).
+_WHATIF_NEVER_LIVE_KEYS = frozenset({"control.dry_run", "control.operational"})
+
+# Sent by the What-if "Gebruik deze knoppen live" confirm. POST /api/settings treats a request
+# carrying this header as an allow-listed apply: any other key is 422 and nothing is written.
+WHATIF_APPLY_HEADER = "x-ems-whatif-apply"
+
+
+def prepare_whatif_live_patch(body: Any) -> tuple[dict[str, Any], dict[str, str]]:
+    """Validate a what-if live apply before it enters the shared `POST /api/settings` writer.
+
+    Returns `(clean, errors)`. A non-empty `errors` means the caller must 422 and write nothing.
+    `clean` contains only `WHATIF_ALLOWED_KEYS` — never `control.dry_run` or `control.operational`.
+    The whole payload is rejected when any key is outside the allow-list (no partial save).
+    """
+    if not isinstance(body, dict) or not body:
+        return {}, {"_": "expected a non-empty object of allow-listed settings"}
+    errors: dict[str, str] = {}
+    for key in body:
+        if key in _WHATIF_NEVER_LIVE_KEYS or key not in WHATIF_ALLOWED_KEYS:
+            errors[key] = "not an allowed live setting"
+    if errors:
+        return {}, errors
+    clean, invalid = validate_settings(body)
+    if invalid:
+        return {}, invalid
+    filtered = {
+        key: value
+        for key, value in clean.items()
+        if key in WHATIF_ALLOWED_KEYS and key not in _WHATIF_NEVER_LIVE_KEYS
+    }
+    if not filtered:
+        return {}, {"_": "nothing to apply"}
+    return filtered, {}
+
 
 def _scenario_totals(days: list[DayResult]) -> dict[str, dict[str, float | None]]:
     """Sum each scenario's cost/import/export across every REPLAYABLE (`data_ok`) day — the same

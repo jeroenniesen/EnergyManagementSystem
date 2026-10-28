@@ -5,8 +5,11 @@ from datetime import UTC, datetime, timedelta
 
 from ems.domain import BatteryIntent
 from ems.planner.reason import (
+    STALE_METER_PLAN_REASON,
     build_decision_reason,
+    current_action_from_slot,
     empty_decision_reason,
+    stale_meter_reason_prefix,
 )
 from ems.planner.schedule import Plan, PlanSlot
 from ems.planner.validator import Finding, PlanValidation
@@ -262,3 +265,47 @@ def test_incomplete_prices_reason_surfaces_code_as_paused():
     ).to_dict()
     assert r["safety_constraint"]["action"] == "paused"
     assert r["safety_constraint"]["code"] == "incomplete_prices"
+
+
+def test_stale_meter_reason_surfaces_in_decision_summary():
+    plan = _charge_plan()
+    stale_slot = _slot(
+        0, BatteryIntent.GRID_CHARGE_TO_TARGET,
+        stale_meter_reason_prefix("charge: cheap window €0.10/kWh"),
+        target_soc=80.0, power_w=4000.0, deadline=NOW + 8 * SLOT,
+    )
+    plan = Plan(created_at=NOW, slots=(stale_slot,) + plan.slots[1:], strategy="winter")
+    r = build_decision_reason(plan, price_by={NOW: 0.10}).to_dict()
+    assert "meter verouderd" in r["summary"]
+    assert STALE_METER_PLAN_REASON in r["summary"]
+
+
+def test_current_action_floor_hold_is_hold_not_discharge():
+    """#312 AC2: floor-hold slot maps to current_action hold."""
+    slot = _slot(
+        0, BatteryIntent.HOLD_RESERVE,
+        "Op de batterijvloer (10%) — huis op net",
+    )
+    assert current_action_from_slot(slot, battery_w=0.0) == "hold"
+    discharge_slot = _slot(0, BatteryIntent.DISCHARGE_FOR_LOAD, "peak window")
+    assert current_action_from_slot(discharge_slot, battery_w=1500.0) == "discharge"
+
+
+def test_evening_reserve_hold_reason_is_the_decision_summary():
+    """#326 AC5: the hold reason is the DecisionReason summary /api/decision serves.
+
+    The API passes the active slot reason as ``summary`` and ``plan_reason``.
+    """
+    from ems.planner.reason import EVENING_RESERVE_HOLD_REASON
+
+    slot = _slot(0, BatteryIntent.HOLD_RESERVE, EVENING_RESERVE_HOLD_REASON)
+    plan = Plan(created_at=NOW, slots=(slot,), strategy="winter")
+    assert current_action_from_slot(slot, battery_w=0.0) == "hold"
+    reason = build_decision_reason(
+        plan, price_by={slot.start: 0.40},
+        summary=slot.reason, plan_reason=slot.reason,
+    )
+    body = reason.to_dict()
+    assert body["summary"] == "Ochtend ingehouden voor avondpiek"
+    assert reason.summary == EVENING_RESERVE_HOLD_REASON
+    assert EVENING_RESERVE_HOLD_REASON in body["summary"]

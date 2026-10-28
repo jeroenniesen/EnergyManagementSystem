@@ -21,9 +21,16 @@ def test_role_satisfies():
 def test_required_tier():
     assert required_tier("/api/status", "GET") == Tier.VIEW
     assert required_tier("/api/settings", "POST") == Tier.OPERATE
+    assert required_tier("/api/setup/settings", "POST") == Tier.ADMIN
     # Review fix: a GET on an OPERATE_PATHS member is a read — readers must not be 403'd on it.
     assert required_tier("/api/settings", "GET") == Tier.VIEW
     assert required_tier("/api/override", "GET") == Tier.VIEW
+    assert required_tier("/api/override/must-charge", "GET") == Tier.VIEW
+    assert required_tier("/api/override/must-charge", "POST") == Tier.OPERATE
+    assert required_tier("/api/override/must-charge", "DELETE") == Tier.OPERATE
+    assert not role_satisfies("reader", required_tier("/api/override/must-charge", "POST"))
+    assert not role_satisfies("reader", required_tier("/api/override/must-charge", "DELETE"))
+    assert role_satisfies("user", required_tier("/api/override/must-charge", "POST"))
     assert required_tier("/api/users", "GET") == Tier.ADMIN
     assert required_tier("/api/users/5", "DELETE") == Tier.ADMIN
     assert required_tier("/api/invites", "POST") == Tier.ADMIN
@@ -38,6 +45,16 @@ def test_required_tier():
     # decisions/config/overrides; the "auth"-category filtering is enforced in the handler, not
     # via the tier (see ems.web.api.audit_endpoint).
     assert required_tier("/api/audit", "GET") == Tier.VIEW
+    assert required_tier("/api/trading/dry-run-reviewed", "POST") == Tier.OPERATE
+    # #334: accept/cancel change the planner load estimate — operate on writes, view on reads.
+    assert required_tier("/api/consumers/advice/accept", "POST") == Tier.OPERATE
+    assert required_tier("/api/consumers/advice/accept", "DELETE") == Tier.OPERATE
+    assert required_tier("/api/consumers/advice/accept", "GET") == Tier.VIEW
+    assert not role_satisfies("reader", required_tier("/api/consumers/advice/accept", "POST"))
+    assert role_satisfies("user", required_tier("/api/consumers/advice/accept", "DELETE"))
+    assert effective_rank("admin", "access", "view") < int(
+        required_tier("/api/consumers/advice/accept", "POST")
+    )
 
 
 def test_requires_session():
@@ -77,6 +94,14 @@ def test_effective_rank_legacy_null_access_caps_at_operate():
 def test_effective_rank_fails_closed_on_garbage_tier():
     # Unknown non-null tier -> rank -1 -> below VIEW -> denies everything. Never KeyError.
     assert effective_rank("admin", "access", "root") == -1
+
+
+def test_reader_cannot_apply_digest_or_whatif_settings():
+    """#337 / F-36+F-38: both one-click buttons POST /api/settings, which stays OPERATE.
+    A reader is below that tier, so the API answers 403. There is no separate apply route."""
+    assert required_tier("/api/settings", "POST") == Tier.OPERATE
+    assert not role_satisfies("reader", required_tier("/api/settings", "POST"))
+    assert role_satisfies("user", required_tier("/api/settings", "POST"))
 
 
 def test_user_and_invite_management_is_session_only():

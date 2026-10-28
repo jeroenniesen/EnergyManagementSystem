@@ -437,6 +437,17 @@ def test_hand_built_plan_over_daily_cap_is_unsafe_auto():
     assert not any(f.code == "daily_grid_charge_cap" for f in under.findings)
 
 
+def test_floor_hold_reserve_slot_stays_valid():
+    """#312 AC4: floor-hold rewrite keeps the plan validator-clean."""
+    hold = PlanSlot(
+        T0, BatteryIntent.HOLD_RESERVE,
+        "Op de batterijvloer (10%) — huis op net", floor_soc=10.0,
+    )
+    v = validate_plan(_plan(hold), **_ctx())
+    assert v.ok
+    assert not any(f.severity == "unsafe" for f in v.findings)
+
+
 def test_unknown_counter_is_unsafe_and_discharge_is_not():
     """None treats the cap as reached. A discharge-only plan is not blocked."""
     charged = validate_plan(
@@ -545,3 +556,51 @@ def test_validator_counts_ac_not_dc_and_calendar_dst_days():
         grid_charge_per_slot_kwh=1.0, site_tz=ams, **_ctx(),
     )
     assert any(f.code == "daily_grid_charge_cap" for f in over_long.findings)
+
+
+def test_evening_reserve_shortfall_warns_and_stays_applicable():
+    """#326 AC3: a hand-made plan under the evening reserve warns, and ok stays true."""
+    from zoneinfo import ZoneInfo
+
+    ams = ZoneInfo("Europe/Amsterdam")
+    start = datetime(2026, 1, 15, 17, 45, tzinfo=ams)
+    evening = datetime(2026, 1, 15, 18, 0, tzinfo=ams)
+    slots = [PlanSlot(start, BatteryIntent.HOLD_RESERVE, "hold")]
+    slots += [
+        PlanSlot(evening + i * SLOT, BatteryIntent.DISCHARGE_FOR_LOAD, "evening peak")
+        for i in range(4)
+    ]
+    plan = Plan(created_at=start, slots=tuple(slots), strategy="winter")
+    proj = [ProjectedSlot(slots[0].start, BatteryIntent.HOLD_RESERVE, 20.0, 0, 0, 0, 0)]
+    proj += [
+        ProjectedSlot(s.start, BatteryIntent.DISCHARGE_FOR_LOAD, 15.0, 0, 0, 0, 0)
+        for s in slots[1:]
+    ]
+    load = {s.start: 2000.0 for s in slots[1:]}
+    load[slots[0].start] = 0.0
+    common = dict(
+        usable_kwh=10.0, round_trip_efficiency=0.90, load_w_by=load,
+        max_discharge_w=4000.0, site_tz=ams, projection=proj,
+    )
+    v = validate_plan(plan, **_ctx(soc_pct=40.0, min_reserve_soc=10.0), **common)
+    assert v.ok is True
+    assert v.status == "warn"
+    finding = next(f for f in v.findings if f.code == "evening_reserve")
+    assert finding.severity == "warn"
+    assert finding.message == (
+        "Projected SoC 20.0% at 18:00 is below the evening reserve: "
+        "floor 10.0% + 2.11 kWh (21.1 pp) − 1 pp = 30.1%."
+    )
+    assert not any(f.severity == "unsafe" for f in v.findings)
+    met = [ProjectedSlot(slots[0].start, BatteryIntent.HOLD_RESERVE, 40.0, 0, 0, 0, 0)]
+    met += [
+        ProjectedSlot(s.start, BatteryIntent.DISCHARGE_FOR_LOAD, 30.0, 0, 0, 0, 0)
+        for s in slots[1:]
+    ]
+    ok = validate_plan(
+        plan, **_ctx(soc_pct=50.0, min_reserve_soc=10.0), **{**common, "projection": met},
+    )
+    assert ok.ok is True
+    assert not any(f.code == "evening_reserve" for f in ok.findings)
+    skipped = validate_plan(plan, projection=proj, **_ctx(soc_pct=40.0, min_reserve_soc=10.0))
+    assert not any(f.code == "evening_reserve" for f in skipped.findings)

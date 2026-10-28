@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from ems.domain import BatteryIntent
 from ems.planner.adaptive import AdaptiveConfig, plan_adaptive
+from ems.planner.economics import max_buy_for_peak
 from ems.planner.schedule import SLOT
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
@@ -213,3 +214,71 @@ def test_adaptive_daily_grid_charge_cap_is_12_kwh_and_marks_buy_pool():
     dropped = [s for s in plan.slots if "Dagplafond" in s.reason]
     assert dropped
     assert all(s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION for s in dropped)
+
+
+def test_adaptive_refuses_charge_when_the_shared_cycle_budget_is_spent():
+    prices = _prices([0.10] * 4 + [0.40] * 4)
+    fc = _fc([0.0] * 8)
+    load = _load([200.0] * 4 + [3000.0] * 4)
+    open_plan = plan_adaptive(
+        prices, fc, T0, soc_pct=15.0, load_w_by=load, cfg=_cfg(max_cycles_per_day=1.5),
+    )
+    spent = plan_adaptive(
+        prices, fc, T0, soc_pct=15.0, load_w_by=load,
+        cfg=_cfg(max_cycles_per_day=1.5, charged_today_kwh=30.0, discharged_today_kwh=0.0),
+    )
+    tight = plan_adaptive(
+        prices, fc, T0, soc_pct=15.0, load_w_by=load, cfg=_cfg(max_cycles_per_day=0.01),
+    )
+    assert any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in open_plan.slots)
+    assert not any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in spent.slots)
+    assert any(s.reason == "Cycle-budget op (1,5 EFC)" for s in spent.slots)
+    assert sum(
+        s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in tight.slots
+    ) < sum(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in open_plan.slots)
+    restricted = {BatteryIntent.GRID_CHARGE_TO_TARGET, BatteryIntent.EXPORT_FOR_PROFIT}
+    for before, after in zip(open_plan.slots, spent.slots, strict=True):
+        if after.intent in restricted:
+            assert before.intent is after.intent
+
+
+def test_four_cent_spread_under_peak_0_40_buys_nothing():
+    """#327 AC2: peak €0.40, pre-peak only 4 ct under it, product wear → no grid buy.
+
+    Slots after the peak are €0.05 so the forward break-even still marks €0.40 as a peak.
+    Those late slots are not a buy window. The €0.36 slots have no load, so they are not
+    themselves a peak. The old raw peak gate would have bought them.
+    """
+    prices = _prices([0.36] * 4 + [0.40] * 4 + [0.05] * 4)
+    fc = _fc([0.0] * 12)
+    load = _load([0.0] * 4 + [3000.0] * 4 + [0.0] * 4)
+    cfg = _cfg(round_trip_efficiency=0.90, degradation_eur_per_kwh=0.05,
+               risk_margin_eur_per_kwh=0.02)
+    plan = plan_adaptive(prices, fc, T0, soc_pct=15.0, load_w_by=load, cfg=cfg)
+    ceiling = max_buy_for_peak(0.40, rte=0.90, deg=0.05, risk=0.02)
+    assert ceiling < 0.36
+    assert plan.buy_pool is not None
+    assert plan.buy_pool.max_buy_eur_per_kwh == ceiling
+    assert plan.buy_pool.pool_size == 0
+    assert plan.buy_pool.state == "empty"
+    assert not any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in plan.slots)
+    assert all(s.floor_soc == 10.0 for s in plan.slots)
+
+
+def test_fourteen_days_of_four_cent_spread_buy_nothing():
+    """Same shape for 14 fixed days: no grid buy, reserve floor still on every slot."""
+    cfg = _cfg(round_trip_efficiency=0.90, degradation_eur_per_kwh=0.05,
+               risk_margin_eur_per_kwh=0.02)
+    bought = 0
+    for offset in range(14):
+        day = T0 + offset * 12 * SLOT
+        prices = [PriceSlot(day + i * SLOT, eur) for i, eur in enumerate(
+            [0.36] * 4 + [0.40] * 4 + [0.05] * 4
+        )]
+        fc = [ForecastSlot(p.start, 0.0, 0.0, 0.0) for p in prices]
+        load = {p.start: (3000.0 if p.eur_per_kwh >= 0.40 else 0.0) for p in prices}
+        plan = plan_adaptive(prices, fc, day, soc_pct=15.0, load_w_by=load, cfg=cfg)
+        bought += sum(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in plan.slots)
+        assert plan.buy_pool is not None and plan.buy_pool.pool_size == 0
+        assert all(s.floor_soc == cfg.reserve_soc_pct for s in plan.slots)
+    assert bought == 0
