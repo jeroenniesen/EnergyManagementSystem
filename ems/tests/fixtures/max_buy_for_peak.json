@@ -1,0 +1,11 @@
+{
+  "formula": "(peak - deg - risk) * rte",
+  "note": "Five winter buy-ceiling cases. The helper must match the formula winter used to inline (#327).",
+  "cases": [
+    {"name": "acceptance", "peak": 0.40, "rte": 0.85, "deg": 0.03, "risk": 0.01, "expected": 0.306},
+    {"name": "product_defaults_peak_0_50", "peak": 0.50, "rte": 0.90, "deg": 0.05, "risk": 0.02, "expected": 0.387},
+    {"name": "lossless_no_wear", "peak": 0.30, "rte": 1.0, "deg": 0.0, "risk": 0.0, "expected": 0.30},
+    {"name": "winter_empty_pool_peak", "peak": 0.37, "rte": 0.90, "deg": 0.05, "risk": 0.02, "expected": 0.27},
+    {"name": "four_cent_peak", "peak": 0.40, "rte": 0.90, "deg": 0.05, "risk": 0.02, "expected": 0.297}
+  ]
+}

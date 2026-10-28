@@ -107,6 +107,59 @@ def _mean(xs: list[float]) -> float:
     return sum(xs) / len(xs) if xs else 0.0
 
 
+def read_charged_discharged_kwh(
+    db_path: str | None,
+    start_iso: str,
+    end_iso: str,
+    *,
+    now_iso: str | None = None,
+) -> tuple[float, float] | None:
+    """Battery kWh charged and discharged in ``[start_iso, end_iso)``.
+
+    None when the file cannot be read. ``(0.0, 0.0)`` when the table is there and the
+    window is empty. Battery power above zero counts as discharge, below zero as charge.
+    The 15-minute bucket that contains ``now_iso`` counts only the elapsed part.
+    """
+    if not db_path:
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+    except sqlite3.Error:
+        return None
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT ts, battery_power_w FROM raw_samples WHERE ts >= ? AND ts < ?",
+                (start_iso, end_iso),
+            ).fetchall()
+        except sqlite3.Error:
+            return None
+    finally:
+        conn.close()
+    start = _parse_utc(start_iso)
+    end = _parse_utc(end_iso)
+    now = _parse_utc(now_iso) if now_iso else None
+    buckets: dict[datetime, list[float]] = defaultdict(list)
+    for ts, watts in rows:
+        parsed = _parse_utc(ts)
+        if parsed is None or start is None or end is None or not (start <= parsed < end):
+            continue
+        buckets[_floor15(parsed)].append(float(watts or 0.0))
+    charged = discharged = 0.0
+    for bucket, samples in buckets.items():
+        end_bucket = bucket + timedelta(minutes=15)
+        if now is not None and bucket >= now:
+            continue
+        if now is not None and bucket <= now < end_bucket:
+            hours = (now - bucket).total_seconds() / 3600.0
+        else:
+            hours = _SLOT_HOURS
+        mean_w = _mean(samples)
+        charged += max(0.0, -mean_w) * hours / 1000.0
+        discharged += max(0.0, mean_w) * hours / 1000.0
+    return charged, discharged
+
+
 _CADENCE_MIN_SAMPLES = 10  # below this, too little evidence to infer — trust the passed cadence
 _CADENCE_CLAMP = (15.0, 900.0)  # plausible recorder cadence bounds (sub-slot; ≥ the API's floor)
 

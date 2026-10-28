@@ -11,6 +11,7 @@ Quick, concrete cheat-sheet for every integration. Details and rationale are in 
 - **Tariff economics:** `/api/plan` and `/api/report` include `tariff_policy`, showing the import and
   export fee assumptions applied to economics. This affects planning and reporting only; it never
   becomes a direct battery power command.
+- **Resident must-charge override (#322 / F-41):** `GET/POST /api/override/must-charge` and `DELETE /api/override/must-charge`. POST body `{target_soc, deadline}`. `deadline` is either an ISO-8601 timestamp with a timezone offset, or `HH:MM` (the next occurrence strictly after now in the site timezone), at most 24 h ahead. `target_soc` is between the effective floor + 5 and 100. Missing or invalid prices, or an unknown battery capability, return **422** `{"detail": "geen sturing"}` and store nothing. A stored override is `{target_soc, deadline, created, expires}` in the override KV. The response includes `unreachable_reason` when the price cap, daily ceiling, cycle budget or battery power cannot reach the target, and `execution: "alleen kijken — niet uitgevoerd"` when watch-only or dry-run is on. POST and DELETE require operate; GET is view. Audit categories: `must_charge_override_start`, `must_charge_override_end`, `must_charge_override_cancel`.
 - **Buy-pool explainability (#315):** `/api/plan` and `/api/decision` (and `decision_reason` on
   `/api/battery-plan`) may include optional `buy_pool` — `state`, `max_buy_eur_per_kwh`,
   `cheapest_slot`, `shortfall_kwh`, `next_chance`, `pool_size` — when the planner sized a grid
@@ -130,6 +131,14 @@ Optional fields on `StatusResponse` (`ems/web/models.py`). Older clients, includ
 
 These fields do **not** arm writes. Watch-only (`config.yaml`, Settings, `control.operational`) still wins; missing prices or an unknown capability report still leave the battery on its own AUTO mode.
 
+## EMS Trading portal (`GET /api/trading`, #339 / F-30)
+
+| Route | Tier | Notes |
+| --- | --- | --- |
+| `GET /api/trading` | VIEW | Snapshot: floors, T-vs-Z evaluation, `steps` (advice / dry_run / arm), `dry_run_reviewed_at`, `arm_allowed`, `arm_block_reason`. |
+| `POST /api/trading/dry-run-reviewed` | OPERATE | Records `trading.dry_run_reviewed_at` (ISO UTC) + audit; does not arm. |
+| `POST /api/settings` with `control.allow_export_discharge: true` | OPERATE | **409** on false→true when Watch-only/dry-run floors block or stap 2 is missing (`Ontbreekt: stap 2 — bekijk de dry-run`). **422** if the client sends `trading.dry_run_reviewed_at`. Disarm (true→false) is never gated. |
+
 ## Home Assistant (the EMS talks to HA) — planned, not yet implemented
 
 > **[#182](https://github.com/jeroenniesen/EnergyManagementSystem/issues/182) / B-26 reconcile:** none of this section is on the **live control path** today. `ems/sources/ha.py` exists as a **read-only skeleton** (unit-tested) but is **not wired** into `sense` / `connection.py` / config / startup validation. There is no `entity_map` in the shipped `config.yaml`, no MQTT publisher (`paho-mqtt` isn't a dependency; no `ems/publish/`), and Home Assistant is **not required** to run the EMS — every device below is read/written **directly** (see the Indevolt and HomeWizard sections above, and `../SPEC.md` §5.2). This section describes the **target** integration: [B-18 / #107](https://github.com/jeroenniesen/EnergyManagementSystem/issues/107).
@@ -137,3 +146,9 @@ These fields do **not** arm writes. Watch-only (`config.yaml`, Settings, `contro
 - WebSocket `ws://<host>:8123/api/websocket` (auth → `subscribe_entities` / `call_service`) — preferred for live state, for calling the `indevolt.charge`/`discharge` **services**, and for setting the Indevolt **entities** (energy-mode select, standby button, discharge-limit number, grid-charge switch). REST as fallback. *(Write-via-HA is separately out of scope for the read skeleton — one battery writer remains `ems/sources/battery.py`.)*
 - **Entity mapping *(planned)*:** pin role→entity ids in config `entity_map` (don't rely only on discovery names); validate they exist with sane `state_class`/units at startup (`../SPEC.md` §5.2, §11.5). **Not present today.**
 - EMS → HA entities via **MQTT discovery** (`homeassistant/<component>/<object_id>/config`, with `unique_id` + `device`) — **planned, not implemented**. **Retain** discovery **config** topics (survive restarts); retain slow state (mode/strategy/reason), don't retain fast telemetry. Do **not** use `POST /api/states` for durable entities (transient, lost on restart).
+
+---
+
+## EMS web API — onboarding setup writes (#291)
+
+- **`POST /api/setup/settings`** — allowlisted settings for the setup wizard only (not a replacement for `POST /api/settings`). Body: JSON `{ "setting.key": value, … }`. Allowed keys: prefixes `battery.*`, `meters.*`, `prices.*`, `site.*`, `ev.*`, plus `connection.use_live_devices`. Device IP fields (`battery.indevolt_ip`, `battery.indevolt_ips_extra` entries, `meters.p1_ip`, `meters.solar_ip`, `meters.car_ip`) must be **RFC1918 private IPv4** literals (no hostnames, no public IPs, no empty disconnect). Response `200`: `{ "values": {…}, "restart_required": bool }` (same shape as settings save; secrets masked). Errors `422` with `errors` per key. **Auth tier: ADMIN** (interactive session or admin role); also listed in `OPERATE_PATHS` for the legacy shared-token write gate. Never accepts `control.*`, `web.*`, or keys outside the allowlist.

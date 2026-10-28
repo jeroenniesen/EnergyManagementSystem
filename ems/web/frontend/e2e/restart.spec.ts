@@ -102,6 +102,7 @@ test.describe("Apply & restart", () => {
     await expect(confirmPanel).toContainText("safe AUTO mode");
     await expect(confirmPanel).toContainText("try again in a moment");
     await expect(confirmPanel).toContainText("comes back on its own");
+    await expect(page.getByTestId("restart-confirm")).toHaveClass(/btn-danger/);
 
     const loadPromise = page.waitForEvent("load");
     await page.getByTestId("restart-confirm").click();

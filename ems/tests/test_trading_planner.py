@@ -318,3 +318,40 @@ def test_nl_reasons_on_acting_export_slots():
         "handelen" in s.reason.lower() or "exporteren" in s.reason.lower() for s in export
     )
     assert "pad T" in out.slots[0].reason or "Handelen" in out.slots[0].reason
+
+
+def test_trading_cycle_budget_same_or_stricter():
+    """#318: zero history keeps today's trade; EFC already used blocks or shrinks it.
+
+    The shared helper is `equivalent_full_cycles`: 30 kWh charged on a 10 kWh pack is 1.5 EFC.
+    """
+    from ems.planner.budgets import equivalent_full_cycles
+
+    prices = _spread_day(cheap=0.04, peak=0.60)
+    z = _z_auto(prices, T0)
+    fresh = maybe_apply_trading(z, prices, T0, _cfg(), soc_pct=40.0)
+    zero = maybe_apply_trading(
+        z, prices, T0, _cfg(charged_today_kwh=0.0, discharged_today_kwh=0.0), soc_pct=40.0,
+    )
+
+    def _sig(plan):
+        return [(s.start, s.intent) for s in plan.slots]
+
+    assert fresh.strategy == "trading"
+    assert _sig(fresh) == _sig(zero)
+    assert equivalent_full_cycles(30.0, 0.0, 10.0) == 1.5
+    spent_cfg = _cfg(charged_today_kwh=30.0, discharged_today_kwh=0.0)
+    spent = maybe_apply_trading(z, prices, T0, spent_cfg, soc_pct=40.0)
+    diag = evaluate_trading(z, prices, T0, spent_cfg, soc_pct=40.0)
+
+    def _count(plan, intent):
+        return sum(s.intent is intent for s in plan.slots)
+
+    assert _count(spent, BatteryIntent.EXPORT_FOR_PROFIT) < _count(
+        fresh, BatteryIntent.EXPORT_FOR_PROFIT,
+    )
+    assert _count(spent, BatteryIntent.GRID_CHARGE_TO_TARGET) <= _count(
+        fresh, BatteryIntent.GRID_CHARGE_TO_TARGET,
+    )
+    assert "Cycle-budget op" in diag["reason"]
+    assert "1,5 EFC" in diag["reason"]

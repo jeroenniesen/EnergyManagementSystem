@@ -166,6 +166,25 @@ def test_winter_falls_back_to_rule_based_without_a_load_profile():
     assert BatteryIntent.GRID_CHARGE_TO_TARGET in {s.intent for s in plan.slots}
 
 
+def test_build_plan_winter_shares_the_cycle_budget():
+    t0 = datetime(2026, 1, 10, 0, 0, tzinfo=UTC)
+    prices = [PriceSlot(t0 + i * SLOT, 0.05 if i < 24 else 0.40) for i in range(48)]
+    summer = SummerConfig(usable_kwh=10.0, target_soc_pct=80.0)
+    loose = build_plan(
+        "winter", prices=prices, forecast=[], now=t0, soc_pct=50.0,
+        winter_cfg=PlannerConfig(max_cycles_per_day=1.5, max_daily_grid_charge_kwh=80.0),
+        summer_cfg=summer,
+    )
+    tight = build_plan(
+        "winter", prices=prices, forecast=[], now=t0, soc_pct=50.0,
+        winter_cfg=PlannerConfig(max_cycles_per_day=0.01, max_daily_grid_charge_kwh=80.0),
+        summer_cfg=summer,
+    )
+    assert any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in loose.slots)
+    assert not any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in tight.slots)
+    assert any("Cycle-budget op" in s.reason for s in tight.slots)
+
+
 # --- Seasonal-transition hysteresis (SPEC §8.4 / BACKLOG B-15) ------------------------------------
 def test_hysteresis_status_reads_strategy_state_without_advancing():
     # F-39 / #345: the API snapshot is a read of HysteresisState (the strategy hysteresis
