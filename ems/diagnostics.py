@@ -81,6 +81,7 @@ def build_diagnostics(
     battery_present: bool | None = None,
     grid_fuse_unset: bool = False,
     forecast_mock_on_live: bool = False,
+    rollup_missing_count: int = 0,
 ) -> list[Check]:
     dq_status = {"complete": "ok", "degraded": "warn", "price_fallback": "warn"}.get(
         data_quality, "fail"
@@ -118,6 +119,12 @@ def build_diagnostics(
         Check("data_quality", "Data quality", dq_status, data_quality),
         Check("planner", "Planner", "ok" if plan_ok else "warn",
               "producing a plan" if plan_ok else "no plan (missing prices?)"),
+        # F-48 / #342: how many sampled days are past noon without an energy+finance rollup.
+        Check(
+            "rollup", "Daily rollup",
+            "warn" if rollup_missing_count else "ok",
+            f"{rollup_missing_count} day(s) past 12:00 without a rollup",
+        ),
         # Identity auth (users/roles) supersedes the legacy shared-token gate: once the identity
         # store is wired (always, in production) EVERY request needs a signed-in user or an access
         # token, so the row reports that truthful state at ok. The legacy branch (auth_store is

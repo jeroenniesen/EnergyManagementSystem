@@ -501,7 +501,9 @@ def test_report_endpoint_year_series_comes_from_daily_energy_rollup(tmp_path, mo
         year = c.get("/api/report?period=year&date=2025-06-15").json()
         c.get("/api/report?period=day&date=2025-03-10").json()
 
-    assert calls["daily_energy_between"] == 1  # only the year request touched the rollup
+    # Year series still comes from the rollup (one read). Boot catch-up (F-48) reads the
+    # last-7 window once, and the day request reads coverage once to stamp `provisional`.
+    assert calls["daily_energy_between"] == 3
     assert calls["build_series"] == 1          # only the day request used the raw-iteration path
     assert len(year["series"]) == 12
     march = year["series"][2]
