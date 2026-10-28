@@ -69,6 +69,8 @@ class LoadProfile:
 
     Enhanced fields (optional, empty on the legacy hour-only path) cascade:
     weather+season+weekend → season+weekend → weekend → hour → typical shape.
+    The opt-in quarter lookup uses a local hour/quarter mean when enough samples exist;
+    sparse quarters follow the unchanged hourly cascade.
     """
 
     by_hour: dict[int, float]  # local hour -> mean load (only well-sampled hours)
@@ -79,6 +81,7 @@ class LoadProfile:
     uncertainty: dict[tuple[bool, int], float] = data_field(default_factory=dict)
     weather_thresholds: tuple[float, float] | None = None
     features: tuple[str, ...] = ("hour",)
+    by_quarter: dict[tuple[int, int], float] = data_field(default_factory=dict)
 
     def expected_w(
         self,
@@ -86,8 +89,13 @@ class LoadProfile:
         *,
         weather_bin: str | None = None,
         daytime_solar_w: float | None = None,
+        resolution: str = "hour",
     ) -> float:
         local = when.astimezone(self.tz)
+        if resolution == "quarter":
+            quarter = self.by_quarter.get((local.hour, local.minute // 15))
+            if quarter is not None:
+                return quarter
         weekend = local.weekday() >= 5
         hour = local.hour
         season = meteorological_season(local.month)
@@ -166,6 +174,7 @@ def _weather_thresholds(day_solar: dict[date, list[float]]) -> tuple[float, floa
 
 def build_load_profile(
     rows: list[dict], tz: ZoneInfo, *, fallback_w: float | None = None, min_samples: int = 3,
+    min_quarter_samples: int = 6,
     field: str = "non_ev_load_w",
     enhanced: bool = False,
     as_of: datetime | None = None,
@@ -185,10 +194,13 @@ def build_load_profile(
     When `enhanced=True` (requires `as_of`), also learn weekday/weekend, meteorological season, and
     an optional weather proxy from `solar_power_w` on the same rows (B-64). Training never sees
     rows at or after `as_of`, and enhanced history is capped to the prior 42 days (PR #65).
+    Quarter means are built alongside hour means so existing callers can opt in at lookup time;
+    each quarter needs at least `min_quarter_samples` valid readings (default six).
     """
     if enhanced and as_of is None:
         raise ValueError("enhanced load profiles need an explicit as_of time")
     buckets: dict[int, list[float]] = defaultdict(list)
+    quarter_buckets: dict[tuple[int, int], list[float]] = defaultdict(list)
     daily: dict[tuple[date, int], list[float]] = defaultdict(list)
     day_solar: dict[date, list[float]] = defaultdict(list)
     for row in rows:
@@ -200,13 +212,18 @@ def build_load_profile(
             continue
         local = dt.astimezone(tz)
         buckets[local.hour].append(value)
+        quarter_buckets[(local.hour, local.minute // 15)].append(value)
         daily[(local.date(), local.hour)].append(value)
         if solar_w is not None and local.hour in _WEATHER_DAYTIME_HOURS:
             day_solar[local.date()].append(solar_w)
 
     by_hour = {h: sum(v) / len(v) for h, v in buckets.items() if len(v) >= min_samples}
+    by_quarter = {
+        key: sum(values) / len(values)
+        for key, values in quarter_buckets.items() if len(values) >= min_quarter_samples
+    }
     if not enhanced:
-        return LoadProfile(by_hour=by_hour, tz=tz, features=("hour",))
+        return LoadProfile(by_hour=by_hour, tz=tz, features=("hour",), by_quarter=by_quarter)
 
     assert as_of is not None  # guarded above
     as_of_local = as_of.astimezone(tz)
@@ -258,4 +275,5 @@ def build_load_profile(
         uncertainty=uncertainty,
         weather_thresholds=thresholds,
         features=tuple(features),
+        by_quarter=by_quarter,
     )
