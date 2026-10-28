@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from ems.digest import build_digest
+from ems.digest import build_digest, latest_solar_confidence_apply
 from ems.notify import Notifier
 from ems.reporting import resolve_window
 from ems.storage.cache import CacheStore
@@ -165,7 +165,16 @@ async def gather_digest(ctx: AppContext, anchor: date_cls) -> dict:
     if ctx.audit_store is not None:
         audit_rows = await ctx.audit_store.between(
             start.astimezone(UTC).isoformat(), end.astimezone(UTC).isoformat())
-    advice = await ctx.solar_confidence_advice(datetime.now(UTC))
+    now_utc = datetime.now(UTC)
+    advice = await ctx.solar_confidence_advice(now_utc)
+    applied_at = None
+    if ctx.audit_store is not None:
+        # Wider than the 7-day gate so a row stamped at the window edge is still visible;
+        # `solar_tweak_suppressed` decides the strict "binnen 7 dagen" cut.
+        since = (now_utc - timedelta(days=8)).isoformat()
+        until = (now_utc + timedelta(seconds=1)).isoformat()
+        recent_audit = await ctx.audit_store.between(since, until)
+        applied_at = latest_solar_confidence_apply(recent_audit)
     export_model = str(ctx.settings_cache.get("prices.export_price_model", "spot_minus_tax"))
     daily_min = float(ctx.settings_cache.get("planner.daily_min_savings_eur", 0.20))
     day_contexts: list[dict] = []
@@ -195,6 +204,8 @@ async def gather_digest(ctx: AppContext, anchor: date_cls) -> dict:
         export_price_model=export_model, day_contexts=day_contexts,
         daily_min_savings_eur=daily_min,
         low_spread_names_spaarvloer=_LOW_SPREAD_NAMES_SPAARVLOER,
+        now=now_utc,
+        solar_confidence_applied_at=applied_at,
     )
 
 

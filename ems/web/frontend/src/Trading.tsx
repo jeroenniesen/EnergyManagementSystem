@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { apiFetch } from "./auth";
+import { attachNumberInputWheel, resolveNumberBlur } from "./numberInput";
 import {
   TRADING_TEST_BATTERY,
   tradingTestBlockReason,
@@ -63,6 +64,10 @@ const EXPORT_MODES = [
   { value: "full_dump", label: "Full dump (empty to reserve)" },
 ];
 
+// Units from the settings schema (planner.trading_min_extra_eur / max_export_kwh_per_day).
+const THRESHOLD_BOUNDS = { min: 0, max: 20 };
+const CAP_BOUNDS = { min: 0, max: 50 };
+
 export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
   const [status, setStatus] = useState<TradingStatus | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -73,6 +78,8 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
   // Raw draft strings so typing "1." does not snap to 1 (Settings NumberInput pattern).
   const [thresholdDraft, setThresholdDraft] = useState<string | null>(null);
   const [capDraft, setCapDraft] = useState<string | null>(null);
+  const thresholdRef = useRef<HTMLInputElement>(null);
+  const capRef = useRef<HTMLInputElement>(null);
   const editingRef = useRef(false);
   editingRef.current = thresholdDraft !== null || capDraft !== null;
   const testConfirmRef = useRef<HTMLDivElement>(null);
@@ -95,6 +102,15 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
       setErr(String(e));
     }
   }
+
+  const inputsReady = status != null;
+  useEffect(() => {
+    if (!inputsReady) return;
+    const cleanups = [thresholdRef.current, capRef.current]
+      .filter((el): el is HTMLInputElement => el != null)
+      .map((el) => attachNumberInputWheel(el));
+    return () => cleanups.forEach((detach) => detach());
+  }, [inputsReady]);
 
   useEffect(() => {
     let alive = true;
@@ -302,42 +318,61 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
             </label>
             <label className="trading-row">
               <span>Min extra €/day (T over Z)</span>
-              <input
-                type="number"
-                data-testid="trading-threshold"
-                min={0}
-                max={20}
-                step={0.05}
-                value={thresholdDraft ?? String(s.min_extra_eur)}
-                disabled={!canOperate || busy}
-                onChange={(e) => setThresholdDraft(e.target.value)}
-                onBlur={() => {
-                  const v = Number(thresholdDraft ?? s.min_extra_eur);
-                  setThresholdDraft(null);
-                  if (!Number.isFinite(v)) return;
-                  void patchSettings({ "planner.trading_min_extra_eur": v });
-                }}
-              />
+              <span className="number-with-unit">
+                <input
+                  ref={thresholdRef}
+                  type="number"
+                  data-testid="trading-threshold"
+                  min={THRESHOLD_BOUNDS.min}
+                  max={THRESHOLD_BOUNDS.max}
+                  step={0.05}
+                  value={thresholdDraft ?? String(s.min_extra_eur)}
+                  disabled={!canOperate || busy}
+                  aria-describedby="trading-threshold-unit"
+                  onChange={(e) => setThresholdDraft(e.target.value)}
+                  onBlur={() => {
+                    const raw = thresholdDraft;
+                    setThresholdDraft(null);
+                    if (raw === null) return;
+                    const result = resolveNumberBlur(raw, THRESHOLD_BOUNDS);
+                    if (result.action !== "commit" || result.value === s.min_extra_eur) return;
+                    void patchSettings({ "planner.trading_min_extra_eur": result.value });
+                  }}
+                />
+                <span className="number-unit-suffix" id="trading-threshold-unit" data-testid="trading-threshold-unit">€/day</span>
+              </span>
             </label>
-            <label className="trading-row">
-              <span>Max export kWh/day (0 = uncapped)</span>
-              <input
-                type="number"
-                data-testid="trading-cap"
-                min={0}
-                max={50}
-                step={0.5}
-                value={capDraft ?? String(s.max_export_kwh_per_day)}
-                disabled={!canOperate || busy}
-                onChange={(e) => setCapDraft(e.target.value)}
-                onBlur={() => {
-                  const v = Number(capDraft ?? s.max_export_kwh_per_day);
-                  setCapDraft(null);
-                  if (!Number.isFinite(v)) return;
-                  void patchSettings({ "planner.max_export_kwh_per_day": v });
-                }}
-              />
-            </label>
+            <div className="trading-limit">
+              <label className="trading-row">
+                <span>Max export kWh/day</span>
+                <span className="number-with-unit">
+                  <input
+                    ref={capRef}
+                    type="number"
+                    data-testid="trading-cap"
+                    min={CAP_BOUNDS.min}
+                    max={CAP_BOUNDS.max}
+                    step={0.5}
+                    value={capDraft ?? String(s.max_export_kwh_per_day)}
+                    disabled={!canOperate || busy}
+                    aria-describedby="trading-cap-unit trading-cap-hint"
+                    onChange={(e) => setCapDraft(e.target.value)}
+                    onBlur={() => {
+                      const raw = capDraft;
+                      setCapDraft(null);
+                      if (raw === null) return;
+                      const result = resolveNumberBlur(raw, CAP_BOUNDS);
+                      if (result.action !== "commit" || result.value === s.max_export_kwh_per_day) return;
+                      void patchSettings({ "planner.max_export_kwh_per_day": result.value });
+                    }}
+                  />
+                  <span className="number-unit-suffix" id="trading-cap-unit" data-testid="trading-cap-unit">kWh</span>
+                </span>
+              </label>
+              <p className="trading-cap-hint" id="trading-cap-hint" data-testid="trading-cap-hint">
+                0 = onbeperkt
+              </p>
+            </div>
             <label className="trading-row">
               <span>Export slot policy</span>
               <select

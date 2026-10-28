@@ -362,6 +362,54 @@ def test_whatif_defaults_days_to_seven(tmp_path):
     assert r.json()["days"] == 7
 
 
+def test_whatif_live_apply_rejects_keys_outside_the_allow_list(tmp_path):
+    """#337 / F-38: confirming 'Gebruik deze knoppen live' posts /api/settings with the what-if
+    header. Anything outside WHATIF_ALLOWED_KEYS is 422, including arming floors. The simulation
+    route itself still writes nothing."""
+    from ems.web.routes.whatif import WHATIF_ALLOWED_KEYS, prepare_whatif_live_patch
+
+    assert "control.dry_run" not in WHATIF_ALLOWED_KEYS
+    assert "control.operational" not in WHATIF_ALLOWED_KEYS
+    clean, errors = prepare_whatif_live_patch({"control.dry_run": False})
+    assert clean == {}
+    assert "control.dry_run" in errors
+    clean, errors = prepare_whatif_live_patch({
+        "planner.solar_confidence": 60, "control.operational": True,
+    })
+    assert clean == {}
+    assert "control.operational" in errors
+
+    db = str(tmp_path / "ems.sqlite")
+    _seed_winter_days(db, 2)
+    _seed_settings(db, {"strategy.mode": "winter"})
+    with TestClient(_app(db)) as c:
+        before = c.get("/api/settings").json()["values"]
+        sim = c.post("/api/whatif", json={
+            "overrides": {"planner.solar_confidence": 60.0}, "days": 2,
+        })
+        assert sim.status_code == 200
+        assert c.get("/api/settings").json()["values"] == before
+        rejected = c.post(
+            "/api/settings",
+            json={"battery.usable_kwh": 20.0},
+            headers={"X-EMS-Whatif-Apply": "1"},
+        )
+        assert rejected.status_code == 422
+        assert "battery.usable_kwh" in rejected.json()["errors"]
+        assert c.get("/api/settings").json()["values"]["battery.usable_kwh"] == before[
+            "battery.usable_kwh"
+        ]
+        applied = c.post(
+            "/api/settings",
+            json={"planner.solar_confidence": 60},
+            headers={"X-EMS-Whatif-Apply": "1"},
+        )
+        assert applied.status_code == 200
+        assert applied.json()["values"]["planner.solar_confidence"] == 60.0
+        assert applied.json()["values"]["control.dry_run"] == before["control.dry_run"]
+        assert applied.json()["values"]["control.operational"] == before["control.operational"]
+
+
 def test_whatif_is_not_gated_by_write_auth(tmp_path):
     # Deliberately outside _WRITE_API_PATHS (see api.py + the whatif.py module docstring): a
     # simulation changes nothing, so it stays reachable without a token even when one is set.
