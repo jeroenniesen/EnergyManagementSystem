@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -28,6 +29,7 @@ from ems.sources.registry import (
     AdapterConfigField,
     AdapterMetadata,
     get_builder,
+    get_metadata,
     register_adapter,
     registered_adapters,
 )
@@ -214,6 +216,79 @@ def _build_solcast(
     )
 
 
+def _delivered_forecast_provider_key(source: object | None) -> str | None:
+    """Registry name of the adapter that actually produced the latest slots.
+
+    Solcast keeps its class after ``fallback_on_failure`` but renames ``provider`` /
+    ``source_label`` to the fallback. Unknown sources return None (treat as no real P10).
+    """
+    if source is None:
+        return None
+    label = str(getattr(source, "source_label", "") or "").strip().lower()
+    provider = str(getattr(source, "provider", "") or "").strip().lower()
+    cls = type(source).__name__
+    if "fallback" in label or provider == "fallback":
+        if "model" in label or cls == "MockSolarForecastSource":
+            return "mock"
+        if (
+            "forecast.solar" in label
+            or "forecast_solar" in label
+            or provider == "forecast_solar"
+            or cls == "ForecastSolarSource"
+        ):
+            return "forecast_solar"
+        return None
+    if provider == "solcast" or (cls == "SolcastSource" and "solcast" in label):
+        return "solcast"
+    if (
+        cls == "ForecastSolarSource"
+        or provider == "forecast_solar"
+        or "forecast.solar" in label
+    ):
+        return "forecast_solar"
+    if cls == "MockSolarForecastSource" or provider == "mock":
+        return "mock"
+    return None
+
+
+def delivered_source_has_real_p10(source: object | None) -> bool:
+    """True when the delivered source has capability ``p10`` and not ``synthetic``.
+
+    Forecast.Solar (derived bands) and the built-in model (``synthetic``) are false.
+    After Solcast ``fallback_on_failure`` the delivered name is the fallback, so ``auto``
+    stays on confidence × P50. A missing or unknown source is false.
+    """
+    key = _delivered_forecast_provider_key(source)
+    if key is None:
+        return False
+    meta = get_metadata(FORECAST_DOMAIN, key)
+    if meta is None:
+        return False
+    caps = meta.capabilities
+    return "p10" in caps and "synthetic" not in caps
+
+
+def _stamp_delivered_real_p10(source: Any) -> Any:
+    """Stamp ``ForecastSlot.real_p10`` from the adapter that ``slots()`` actually delivered.
+
+    The check runs after ``slots()`` so a Solcast ``fallback_on_failure`` (its label is
+    rewritten first) stays on confidence × P50. An unknown source is left unstamped.
+    """
+    if source is None or getattr(source, "_ems_real_p10_bound", False):
+        return source
+    original = source.slots
+
+    def _slots() -> list:
+        got = original()
+        if not got or not delivered_source_has_real_p10(source):
+            return got
+        return [replace(item, real_p10=True) for item in got]
+
+    source.slots = _slots
+    source._ems_real_p10_bound = True
+    return source
+
+
 def build_solar_forecast(
     eff: dict,
     tz: ZoneInfo,
@@ -240,11 +315,11 @@ def build_solar_forecast(
     if mock_builder is None:  # pragma: no cover — registered at import
         raise RuntimeError("mock forecast adapter missing from registry")
     if not live or eff.get("site.lat") is None or eff.get("site.lon") is None:
-        return mock_builder(eff, tz, cache_store=cache_store)
+        return _stamp_delivered_real_p10(mock_builder(eff, tz, cache_store=cache_store))
 
     provider = str(eff.get("solar.forecast_provider") or "forecast_solar").strip().lower()
     if provider == "mock":
-        return mock_builder(eff, tz, cache_store=cache_store)
+        return _stamp_delivered_real_p10(mock_builder(eff, tz, cache_store=cache_store))
 
     # Forecast.Solar is always available as the keyless baseline / Solcast fallback.
     # Build via the registered builder so vendor import stays behind the registry.
@@ -253,12 +328,12 @@ def build_solar_forecast(
         raise RuntimeError("forecast_solar adapter missing from registry")
     baseline = baseline_builder(eff, tz, cache_store=cache_store, http_get=http_get)
     if provider == "forecast_solar":
-        return baseline
+        return _stamp_delivered_real_p10(baseline)
 
     builder = get_builder(FORECAST_DOMAIN, provider)
     if builder is None:
         _log.warning("unknown solar.forecast_provider=%r; using Forecast.Solar", provider)
-        return baseline
+        return _stamp_delivered_real_p10(baseline)
 
     # Only the chosen provider's builder runs here (lazy). Baseline was built because Solcast
     # needs it as SPEC fallback / incomplete-config path — not because every registered builder
@@ -268,4 +343,4 @@ def build_solar_forecast(
         eff, tz, cache_store=cache_store, fallback=baseline,
         http_get=solcast_http_get if solcast_http_get is not None else http_get,
     )
-    return built if built is not None else baseline
+    return _stamp_delivered_real_p10(built if built is not None else baseline)

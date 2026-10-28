@@ -3,6 +3,27 @@ import { expect, test } from "@playwright/test";
 
 import { mockRoute } from "./route-mock";
 
+const TRADING_STEPS = [
+  {
+    id: "advice",
+    ok: false,
+    label: "Stap 1 — Trading aan (plan-only)",
+    missing: "trading staat uit",
+  },
+  {
+    id: "dry_run",
+    ok: false,
+    label: "Stap 2 — Dry-run T-vs-Z bekeken",
+    missing: "niet vastgelegd",
+  },
+  {
+    id: "arm",
+    ok: false,
+    label: "Stap 3 — Live export bewapend",
+    missing: "nog niet bewapend",
+  },
+];
+
 const TRADING_RESP = {
   trading_enabled: false,
   min_extra_eur: 0.5,
@@ -15,6 +36,10 @@ const TRADING_RESP = {
   operational: false,
   writes_allowed: false,
   block_reason: "yaml/control dry-run or mock/replay floor — no battery writes",
+  dry_run_reviewed_at: null,
+  arm_allowed: false,
+  arm_block_reason: "yaml/control dry-run or mock/replay floor — no battery writes",
+  steps: TRADING_STEPS,
   evaluation: {
     enabled: false,
     would_trade: false,
@@ -53,7 +78,18 @@ test.describe("Trading view", () => {
     await expect(page.getByTestId("trading-eval-projection")).toContainText("Plan validator: valid");
     await expect(page.getByTestId("trading-enabled")).toBeVisible();
     await expect(page.getByTestId("trading-arm")).toBeVisible();
+    await expect(page.getByTestId("trading-step-dry_run")).toContainText("✗");
+    await expect(page.getByTestId("trading-arm-step2-missing")).toContainText(
+      "Ontbreekt: stap 2 — bekijk de dry-run",
+    );
+    await expect(page.getByTestId("trading-test-consequence")).toContainText("reservevloer");
+    const startBtn = page.getByTestId("trading-test-btn");
+    await expect(startBtn).toBeDisabled();
+    await expect(startBtn).toHaveClass(/btn-danger/);
     await expect(page.getByTestId("trading-test-blocked")).toBeVisible();
+    await expect(page.getByTestId("trading-test-blocked")).toContainText(
+      TRADING_RESP.block_reason,
+    );
     trading.assertRequested();
   });
 
@@ -63,7 +99,19 @@ test.describe("Trading view", () => {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(TRADING_RESP),
+        body: JSON.stringify({
+          ...TRADING_RESP,
+          dry_run: false,
+          operational: true,
+          writes_allowed: true,
+          block_reason: null,
+          dry_run_reviewed_at: "2026-03-15T10:00:00+00:00",
+          arm_allowed: true,
+          arm_block_reason: null,
+          steps: TRADING_STEPS.map((s) =>
+            s.id === "dry_run" ? { ...s, ok: true, missing: null } : s,
+          ),
+        }),
       }),
     );
     await page.route("**/api/settings", async (route) => {
@@ -79,10 +127,119 @@ test.describe("Trading view", () => {
       });
     });
     await page.goto("/#trading");
+    await expect(page.getByTestId("trading-step-dry_run")).toContainText("✓");
     await page.getByTestId("trading-arm").click();
     await expect(page.getByTestId("trading-arm-confirm")).toBeVisible();
     await page.getByTestId("trading-arm-confirm").click();
     await expect.poll(() => posted?.["control.allow_export_discharge"]).toBe(true);
+  });
+
+  test("dry-run reviewed button posts to the reviewed endpoint", async ({ page }) => {
+    let reviewed = false;
+    await mockRoute(page, "**/api/trading", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(TRADING_RESP),
+      }),
+    );
+    await page.route("**/api/trading/dry-run-reviewed", async (route) => {
+      reviewed = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          reviewed_at: "2026-03-15T10:00:00+00:00",
+        }),
+      });
+    });
+    await page.goto("/#trading");
+    await page.getByTestId("trading-dry-run-reviewed").click();
+    await expect.poll(() => reviewed).toBe(true);
+  });
+
+  test("arm disabled when writes blocked (Watch-only / dry-run)", async ({ page }) => {
+    await mockRoute(page, "**/api/trading", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...TRADING_RESP,
+          dry_run_reviewed_at: "2026-03-15T10:00:00+00:00",
+          steps: TRADING_STEPS.map((s) =>
+            s.id === "dry_run" ? { ...s, ok: true, missing: null } : s,
+          ),
+        }),
+      }),
+    );
+    await page.goto("/#trading");
+    await expect(page.getByTestId("trading-arm")).toBeDisabled();
+    await expect(page.getByTestId("trading-arm-block-reason")).toContainText("dry-run");
+  });
+
+  test("disarm stays enabled when armed", async ({ page }) => {
+    await mockRoute(page, "**/api/trading", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...TRADING_RESP,
+          allow_export_discharge: true,
+          writes_allowed: false,
+          steps: TRADING_STEPS.map((s) =>
+            s.id === "arm" ? { ...s, ok: true, missing: null } : s,
+          ),
+        }),
+      }),
+    );
+    await page.goto("/#trading");
+    await expect(page.getByTestId("trading-disarm")).toBeEnabled();
+  });
+
+  test("TRD-02: writes allowed opens confirm, focus moves, one POST on confirm", async ({
+    page,
+  }) => {
+    let testPosts = 0;
+    await mockRoute(page, "**/api/trading", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...TRADING_RESP,
+          dry_run: false,
+          operational: true,
+          writes_allowed: true,
+          block_reason: null,
+          test_battery_allowed: true,
+        }),
+      }),
+    );
+    await page.route("**/api/trading/test-battery", async (route) => {
+      if (route.request().method() === "POST") {
+        testPosts += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true, detail: "Test gestart" }),
+        });
+      } else {
+        await route.fallback();
+      }
+    });
+    await page.goto("/#trading");
+    await expect(page.getByTestId("trading-test-consequence")).toBeVisible();
+    const startBtn = page.getByTestId("trading-test-btn");
+    await expect(startBtn).toBeEnabled();
+    await expect(startBtn).toHaveClass(/btn-danger/);
+    await startBtn.click();
+    const panel = page.getByTestId("trading-test-confirm-panel");
+    await expect(panel).toBeVisible();
+    await expect(panel).toBeFocused();
+    const confirmBtn = page.getByTestId("trading-test-confirm");
+    await expect(confirmBtn).toHaveClass(/btn-danger/);
+    await confirmBtn.click();
+    await expect.poll(() => testPosts).toBe(1);
   });
 
   test("hides Test battery button while a probe is running", async ({ page }) => {
@@ -104,5 +261,140 @@ test.describe("Trading view", () => {
     await expect(page.getByTestId("trading-test-running")).toBeVisible();
     await expect(page.getByTestId("trading-test-btn")).toHaveCount(0);
     await expect(page.getByTestId("trading-test-confirm")).toHaveCount(0);
+  });
+
+  test("#366 empty threshold and cap restore the value and post nothing", async ({ page }) => {
+    let posts = 0;
+    await mockRoute(page, "**/api/trading", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...TRADING_RESP,
+          min_extra_eur: 0.5,
+          max_export_kwh_per_day: 12,
+        }),
+      }),
+    );
+    await mockRoute(page, "**/api/settings", async (route) => {
+      if (route.request().method() === "POST") {
+        posts += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ values: {} }),
+        });
+        return;
+      }
+      await route.fallback();
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/#trading");
+    const threshold = page.getByTestId("trading-threshold");
+    const cap = page.getByTestId("trading-cap");
+    await expect(threshold).toHaveValue("0.5");
+    const noPost = page.waitForRequest(
+      (req) => req.method() === "POST" && req.url().includes("/api/settings"),
+      { timeout: 1000 },
+    );
+    await threshold.fill("");
+    await threshold.blur();
+    await expect(threshold).toHaveValue("0.5");
+    await cap.fill("");
+    await cap.blur();
+    await expect(cap).toHaveValue("12");
+    await expect(noPost).rejects.toThrow();
+    expect(posts).toBe(0);
+    await expect(page.getByTestId("trading-threshold-unit")).toHaveText("€/day");
+    await expect(page.getByTestId("trading-cap-unit")).toHaveText("kWh");
+    await expect(page.getByTestId("trading-cap-hint")).toContainText("0 = onbeperkt");
+    for (const scheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await expect(page.locator("html")).toHaveAttribute("data-theme", scheme);
+      const unit = page.getByTestId("trading-cap-unit");
+      await expect(unit).toBeVisible();
+      const box = await unit.boundingBox();
+      expect(box).toBeTruthy();
+      expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+    }
+  });
+
+  test("#366 wheel does not change threshold or cap", async ({ page }) => {
+    await mockRoute(page, "**/api/trading", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...TRADING_RESP,
+          min_extra_eur: 0.5,
+          max_export_kwh_per_day: 12,
+        }),
+      }),
+    );
+    await page.goto("/#trading");
+    const threshold = page.getByTestId("trading-threshold");
+    await threshold.click();
+    await expect(threshold).toBeFocused();
+    await threshold.evaluate((el) => {
+      el.addEventListener("wheel", () => {
+        el.dataset.wheeled = "yes";
+      });
+    });
+    await threshold.hover();
+    await page.mouse.wheel(0, 240);
+    await expect(threshold).toHaveValue("0.5");
+    await expect(threshold).toHaveAttribute("data-wheeled", "yes");
+    const cap = page.getByTestId("trading-cap");
+    await cap.click();
+    await expect(cap).toBeFocused();
+    await cap.evaluate((el) => {
+      el.addEventListener("wheel", () => {
+        el.dataset.wheeled = "yes";
+      });
+    });
+    await cap.hover();
+    await page.mouse.wheel(0, 240);
+    await expect(cap).toHaveValue("12");
+    await expect(cap).toHaveAttribute("data-wheeled", "yes");
+  });
+
+  test("#366 a valid threshold still posts on blur", async ({ page }) => {
+    let minExtra = 0.5;
+    let posts = 0;
+    let last: Record<string, unknown> | null = null;
+    await mockRoute(page, "**/api/trading", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...TRADING_RESP,
+          min_extra_eur: minExtra,
+          max_export_kwh_per_day: 12,
+        }),
+      }),
+    );
+    await mockRoute(page, "**/api/settings", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.fallback();
+        return;
+      }
+      posts += 1;
+      last = JSON.parse(route.request().postData() || "{}") as Record<string, unknown>;
+      if (typeof last["planner.trading_min_extra_eur"] === "number") {
+        minExtra = last["planner.trading_min_extra_eur"];
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ values: last }),
+      });
+    });
+    await page.goto("/#trading");
+    const threshold = page.getByTestId("trading-threshold");
+    await threshold.fill("1.25");
+    await threshold.blur();
+    await expect.poll(() => posts).toBe(1);
+    expect(last?.["planner.trading_min_extra_eur"]).toBe(1.25);
+    await expect(threshold).toHaveValue("1.25");
   });
 });

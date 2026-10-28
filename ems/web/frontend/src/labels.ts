@@ -625,6 +625,18 @@ export const HOME_MORE_NEST = {
   car: "Auto",
 } as const;
 
+/** Resident must-charge override (#322). Copy is fixed — tests and the API share these strings. */
+export const MUST_CHARGE_OVERRIDE = {
+  title: "Vul tot X% vóór HH:MM",
+  hint: "Tijdelijk laden voor gasten, vorst of piekangst. Stopt vanzelf op het tijdstip of zodra het doel bereikt is.",
+  targetLabel: "Doelpercentage",
+  hourLabel: "Klaar vóór",
+  submit: "Vul de batterij",
+  cancel: "Annuleer",
+  watchOnly: "alleen kijken — niet uitgevoerd",
+  active: (pct: number, hhmm: string) => `Vul tot ${pct}% vóór ${hhmm}`,
+} as const;
+
 export const HOME_TILE = {
   sectionAria: "Tot nu toe vandaag",
   staleUpdated: "Verouderd · Bijgewerkt",
@@ -695,11 +707,20 @@ export const HOME_PLAN_STORY = {
   socScale: (pct: number) => `${pct}%`,
 } as const;
 
+/** #330 / F-18: Home plan label when committed grid charge was sized on a real P10. */
+export const COMMIT_SOLAR_P10_LABEL =
+  "Lading gedimensioneerd op P10 (voorzichtige zon)";
+
 /** #315 / F-02+F-31: Home tile when EMS cannot grid-buy (empty buy pool). */
+export const HOME_MUST_CHARGE = {
+  title: "Voorzorgslading",
+} as const;
+
 export const HOME_WHY_NOT_BUY = {
   title: "Waarom niet kopen?",
   noChanceInHorizon: "Geen koopmoment in de prijzen van vandaag/morgen",
   maxBuy: (eur: string) => `Max inkoopprijs ${eur}`,
+  residentLimit: (eur: string) => `Jouw limiet ${eur}`,
   cheapest: (time: string, eur: string) => `Goedkoopste moment ${time} (${eur})`,
   shortfall: (kwh: string) => `Tekort ${kwh}`,
   nextChance: (time: string) => `Volgende kans ${time}`,
@@ -850,6 +871,25 @@ export function exportModelMismatchWarning(exportPriceModel: string): string | n
   return null;
 }
 
+/** Week digest panel — load/error copy (#369 INS-01). */
+export const WEEK_DIGEST = {
+  sectionTitle: "Je week",
+  loadError: "De weeksamenvatting kon niet worden geladen.",
+  retry: "Opnieuw",
+} as const;
+
+/** Onboarding checklist (#369 SETP-02). */
+export const SETUP_CHECKLIST = {
+  loading: "Laden…",
+  retry: "Opnieuw proberen",
+} as const;
+
+/** Audit log (#369 AUD-01 error slice). */
+export const AUDIT_VIEW = {
+  loadError: "Het wijzigingslog kon niet worden geladen.",
+  retry: "Opnieuw",
+} as const;
+
 /** Week digest: negative savings days (audit F-49 / #325). */
 export const WEEK_DIGEST_NEGATIVE_DAY = {
   sectionTitle: "Dagen met verlies",
@@ -904,3 +944,95 @@ export const WHATIF_APPLY_LIVE = {
   failed: "Opslaan mislukt — er is niets gewijzigd.",
   loading: "Huidige waarden ophalen…",
 } as const;
+
+/** Resident max purchase price (#324, audit F-15). */
+export const MAX_BUY_PRICE_CAP = {
+  label: "Max. inkoopprijs",
+  help:
+    "Nooit van het net laden boven deze prijs. 0 = automatisch: EMS berekent zelf de economische "
+    + "koopgrens uit piek, rendement, slijtage en risico.",
+  residentLimit: (eur: string) => `Jouw limiet ${eur}`,
+} as const;
+
+/**
+ * #364 — save-bar consequence before Watch only goes off or operational goes on.
+ * Pulled forward from the Apply & restart dialog: control is allowed, only after
+ * restart, and a restart can abort an active charge window.
+ */
+export const CONTROL_ARM_CONSEQUENCE =
+  "EMS mag daarna de batterij aansturen. Dat wordt pas actief na een herstart. "
+  + "Een herstart geeft de batterij terug aan automatisch zelfgebruik en breekt een lopend laadvenster af.";
+
+export const CONTROL_ARM_CONFIRM_TITLE = "Sturen toestaan?";
+export const CONTROL_ARM_CONFIRM_LABEL = "Opslaan en sturen toestaan";
+export const CONTROL_ARM_CONFIRM_CANCEL = "Annuleren";
+
+/** Visible badge / save line instead of the `restart_pending` token (#364). */
+export const RESTART_PENDING_LABEL = "Wacht op herstart";
+
+/** Control & safety section hint — no dry_run / mock jargon in the visible text (#364). */
+export const CONTROL_SECTION_HINT =
+  "Safety limits and arming. Set your main fuse here — until confirmed, System shows a Check "
+  + "and EMS keeps the conservative 1×25 A ceiling. Watch only / Let the system control need "
+  + "Apply & restart — saved ≠ live until then. A demo setup, or a file that forces watch-only, "
+  + "still always wins over these toggles. Other control knobs apply as soon as you save (active now).";
+
+/**
+ * #364 SYS-01 — one Dutch sentence for a blocked run mode. File-level tokens stay behind Meer.
+ */
+export const MODE_BLOCK_RECOVERY = {
+  sentence:
+    "EMS stuurt de batterij nu niet: zet Alleen kijken uit onder Control & safety en herstart, "
+    + "of zet ‘Let the system control the battery’ uit als je wilt blijven kijken.",
+  more:
+    "In config.yaml moeten dev.mode op live en control.dry_run op false staan; "
+    + "anders blijft alleen kijken geforceerd.",
+} as const;
+
+/** TRD-02 (#367) — battery test card copy and gate helpers (Trading.tsx). */
+export const TRADING_TEST_BATTERY = {
+  consequence:
+    "De batterij ontlaadt ongeveer 2 minuten op maximaal vermogen, tot aan de reservevloer.",
+  startLabel: "Start test",
+  confirmHint:
+    "Bevestig de proefontlading. Dit bewapent live handel niet. Geweigerd als de auto gaat laden "
+    + "vóór je bevestigt.",
+  defaultBlockReason: "Test niet beschikbaar — schrijven of sensorgegevens geblokkeerd.",
+} as const;
+
+export type TradingTestGateStatus = {
+  writes_allowed: boolean;
+  block_reason: string | null;
+  test_battery_allowed?: boolean;
+  test_battery_block_reason?: string | null;
+};
+
+/** Mirrors GET /api/trading test gate — UI only; server stays authoritative. */
+export function tradingTestBlockedByStatus(s: TradingTestGateStatus): boolean {
+  return (
+    s.test_battery_allowed === false
+    || (!s.writes_allowed && s.test_battery_allowed === undefined)
+  );
+}
+
+export function tradingTestBlockReason(s: TradingTestGateStatus): string {
+  return (
+    s.test_battery_block_reason
+    || s.block_reason
+    || TRADING_TEST_BATTERY.defaultBlockReason
+  );
+}
+
+/** Show block copy only when the status gate is closed — not when busy alone disables the button. */
+export function tradingTestShowBlockReason(s: TradingTestGateStatus): boolean {
+  return !s.writes_allowed || tradingTestBlockedByStatus(s);
+}
+
+export function tradingTestStartDisabled(
+  s: TradingTestGateStatus,
+  opts: { canOperate: boolean; busy: boolean; probeActive?: boolean },
+): boolean {
+  if (!opts.canOperate || opts.busy || opts.probeActive) return true;
+  if (!s.writes_allowed) return true;
+  return tradingTestBlockedByStatus(s);
+}

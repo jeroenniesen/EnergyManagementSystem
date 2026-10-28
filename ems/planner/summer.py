@@ -9,7 +9,8 @@ self-consumption — daytime soaks surplus, night discharges to serve the house.
 Risk-aware sizing (SPEC §6.3): the solar we *count on* to fill the battery is a configurable
 fraction of the expected (P50) forecast — `solar_confidence` (0..1). Lower = more cautious (counts
 on less sun, so a cloudy afternoon doesn't leave us short overnight, at the cost of buying more grid
-power); higher = trusts the forecast and buys less. Pure + unit-tested — the caller supplies prices,
+power); higher = trusts the forecast and buys less. Stale EV/grid meters are handled in the
+rule-based adapter (#332), not inside this module. Pure + unit-tested — the caller supplies prices,
 the solar forecast and the current SoC; no hardware, no I/O.
 """
 from __future__ import annotations
@@ -20,7 +21,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
+from ems.planner import economics
 from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_grid_charge
+from ems.planner.horizon import slice_price_horizon
 from ems.planner.rule_based import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
@@ -45,6 +48,26 @@ def sunset_after(forecast: list[ForecastSlot], now: datetime) -> datetime | None
     return run[-1] if run else None
 
 
+def _topup_price_limit(
+    cfg: SummerConfig,
+    future: list[PriceSlot],
+    charge_deadline: datetime | None,
+) -> float:
+    """Configured top-up cap, tightened by the shared buy ceiling when a later night exists.
+
+    `peak` is the dearest slot after the charge deadline — the import the top-up is covering.
+    No deadline, or nothing after it, means there is no separate night price to undercut, so
+    the configured cap stays the ceiling (a flat dark horizon is not an arbitrage peak).
+    """
+    cap = cfg.max_topup_price_eur_per_kwh
+    if charge_deadline is None:
+        return cap
+    overnight = [p.eur_per_kwh for p in future if p.start > charge_deadline]
+    if not overnight:
+        return cap
+    return min(cap, economics.max_buy_for_planner_config(max(overnight), cfg))
+
+
 @dataclass(frozen=True)
 class SummerConfig:
     usable_kwh: float
@@ -57,6 +80,11 @@ class SummerConfig:
     solar_confidence: float = 0.8
     allow_grid_topup: bool = True  # may we buy the shortfall from the grid, or solar-only?
     max_topup_price_eur_per_kwh: float = 0.30  # never top up above this price
+    # Same wear/risk the other planners already use. Defaults match settings.py so a caller
+    # that does not thread them (service.summer_cfg is out of scope for #327) still prices
+    # the shared buy ceiling at the product default.
+    degradation_eur_per_kwh: float = 0.05
+    risk_margin_eur_per_kwh: float = 0.02
     horizon_slots: int = 96
     negative_price_soak: bool = False  # opt-in: sub-zero slots become top-up candidates
     max_daily_grid_charge_kwh: float = 12.0  # #317 hard daily grid-buy cap
@@ -72,7 +100,9 @@ def plan_summer(
     soc_pct: float,
     cfg: SummerConfig,
 ) -> Plan:
-    future = [p for p in prices if p.start + SLOT > now][: cfg.horizon_slots]
+    future = slice_price_horizon(
+        prices, now, cfg.site_tz, fallback_slots=cfg.horizon_slots,
+    )
     if not future:
         return Plan(created_at=now, slots=())
 
@@ -126,11 +156,12 @@ def plan_summer(
     soak = cfg.negative_price_soak
     per_slot_kwh = cfg.max_charge_w * dh / 1000.0 * eta
     grid_set: set[datetime] = set()
+    topup_limit = _topup_price_limit(cfg, future, charge_deadline)
 
     def _eligible(p: PriceSlot) -> bool:
         if charge_deadline is not None and p.start > charge_deadline:
             return False
-        if cfg.allow_grid_topup and p.eur_per_kwh <= cfg.max_topup_price_eur_per_kwh:
+        if cfg.allow_grid_topup and p.eur_per_kwh <= topup_limit:
             return True
         return soak and p.eur_per_kwh < 0.0
 

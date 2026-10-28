@@ -188,8 +188,19 @@ def test_post_settings_without_store_returns_503():
 
 
 def test_control_settings_applied_to_controller_live(tmp_path):
+    import asyncio
+
+    db = str(tmp_path / "ems.sqlite")
+    store = SettingsStore(db)
+    asyncio.run(store.init())
+    # Grandfather armed: true→true on POST keeps the combined payload valid under #339 gate.
+    asyncio.run(store.set_many({"control.allow_export_discharge": True}))
     controller = ModeController(MockBatteryDriver(), Lifecycle(dry_run=True), dry_run=True)
-    app = _app(tmp_path, controller=controller)
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock",
+        settings_store=SettingsStore(db),
+        controller=controller,
+    )
     with TestClient(app) as c:
         c.post("/api/settings", json={"control.max_switches_per_day": 3,
                                       "control.allow_export_discharge": True})

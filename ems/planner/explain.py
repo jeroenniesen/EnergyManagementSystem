@@ -15,7 +15,9 @@ from datetime import datetime
 from typing import Protocol
 
 from ems.domain import BatteryIntent
+from ems.planner.horizon import MAX_HORIZON_SLOTS
 from ems.planner.projection import SLOT_HOURS, ProjectedSlot
+from ems.planner.reason import STALE_METER_PLAN_REASON
 from ems.planner.schedule import Plan
 from ems.savings import estimate_daily_savings_eur
 from ems.sources.forecast import ForecastSlot
@@ -98,6 +100,9 @@ def _summary(slots, price_by: dict[datetime, float]) -> str:
     if sc:
         parts.append(f"self-consume {sc}×15m")
     summary = "Next 24h — " + ", ".join(parts) + "." if parts else "Next 24h — self-consumption."
+    if any(STALE_METER_PLAN_REASON in (s.reason or "") for s in slots):
+        if STALE_METER_PLAN_REASON not in summary:
+            summary = f"{STALE_METER_PLAN_REASON}. {summary}"
     # Surface winter EV-day sizing (#181) when any slot already carries the deterministic reason.
     for s in slots:
         reason = getattr(s, "reason", "") or ""
@@ -416,7 +421,7 @@ def build_plan_detail(
     prices: list[PriceSlot],
     plan: Plan,
     forecast_slots: list[ForecastSlot] | None,
-    horizon: int = 96,
+    horizon: int = MAX_HORIZON_SLOTS,
 ) -> dict:
     """Per-slot {start, intent, reason, eur_per_kwh, solar_w} on the plan's timeline + a summary."""
     price_by = {p.start: p.eur_per_kwh for p in prices}

@@ -30,6 +30,7 @@ class ForecastSlot:
     p10_w: float
     p50_w: float
     p90_w: float
+    real_p10: bool = False  # #330: true only when the delivering source stamped a real P10
 
 
 def _utcnow() -> datetime:

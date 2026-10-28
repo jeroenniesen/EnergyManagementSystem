@@ -1,13 +1,16 @@
 """The strategy selector wired through the API: /api/strategy + the chosen strategy driving the
 plan. Mock sources only."""
 import json
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
+from ems.planner.strategy import HysteresisState
 from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
+from ems.storage.audit import AuditStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
 
@@ -58,6 +61,74 @@ def test_strategy_choice_changes_the_plan(tmp_path):
     w_reasons = " ".join(s["reason"] for s in winter["slots"])
     s_reasons = " ".join(s["reason"] for s in summer["slots"])
     assert w_reasons != s_reasons
+
+
+def test_strategy_endpoint_exposes_pending_hysteresis(tmp_path):
+    # F-39 / #345: count/days/pending/committed come from the live HysteresisState. Seeding the
+    # box does not run apply_hysteresis; last_day is today so the endpoint's existing resolve
+    # does not advance the counter either.
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        now = datetime.now(UTC)
+        day = now.astimezone(AMS).date().isoformat()
+        app.state.control_service._ctx.hysteresis_box["state"] = HysteresisState(
+            committed="winter", pending="summer", count=2, last_day=day,
+        )
+        body = c.get("/api/strategy").json()
+    assert body["active"] == "winter"
+    assert body["hysteresis"] == {
+        "committed": "winter", "pending": "summer", "count": 2, "days": 3,
+    }
+
+
+def test_force_summer_changes_active_strategy_within_one_cycle_and_audits(tmp_path):
+    # F-39 / #345 AC2: 'Nu solar-first' is a settings write (strategy.mode=summer). The next
+    # control cycle reads that mode via ControlService.resolve_strategy — one call, no battery
+    # write. The same POST records config_change. 'Terug naar Auto' restores strategy.mode=auto.
+    db = str(tmp_path / "ems.sqlite")
+    audit = AuditStore(db)
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
+        price_source=MockPriceSource(AMS), solar_forecast=MockSolarForecastSource(AMS),
+        settings_store=SettingsStore(db), audit_store=audit,
+    )
+    with TestClient(app) as c:
+        svc = app.state.control_service
+        now = datetime.now(UTC)
+        day = now.astimezone(AMS).date().isoformat()
+        svc._ctx.hysteresis_box["state"] = HysteresisState(
+            committed="winter", pending="summer", count=2, last_day=day,
+        )
+        held = c.get("/api/strategy").json()
+        assert held["mode"] == "auto" and held["active"] == "winter"
+        assert svc.resolve_strategy(now)[0] == "winter"
+
+        saved = c.post("/api/settings", json={"strategy.mode": "summer"})
+        assert saved.status_code == 200
+        # Exactly one resolution: what the following cycle uses. Forced summer bypasses the hold.
+        assert svc.resolve_strategy(now)[0] == "summer"
+        after = c.get("/api/strategy").json()
+        assert after["mode"] == "summer" and after["active"] == "summer"
+
+        rows = c.get("/api/audit", params={"category": "config_change"}).json()["entries"]
+        assert rows
+        assert rows[0]["detail"]["keys"] == ["strategy.mode"]
+        assert "strategy.mode" in rows[0]["summary"]
+
+        restored = c.post("/api/settings", json={"strategy.mode": "auto"})
+        assert restored.status_code == 200
+        assert restored.json()["values"]["strategy.mode"] == "auto"
+        assert c.get("/api/strategy").json()["mode"] == "auto"
+        back_rows = c.get("/api/audit", params={"category": "config_change"}).json()["entries"]
+        assert back_rows[0]["detail"]["keys"] == ["strategy.mode"]
+        # The override path never arms the writer or flips the dry-run floors.
+        values = c.get("/api/settings").json()["values"]
+        assert "control.operational" in values and "control.dry_run" in values
+        assert all(
+            "control.operational" not in e["detail"]["keys"]
+            and "control.dry_run" not in e["detail"]["keys"]
+            for e in back_rows
+        )
 
 
 def test_plan_detail_includes_active_strategy(tmp_path):

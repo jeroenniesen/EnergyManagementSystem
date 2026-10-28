@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { apiFetch } from "./auth";
 import { DecisionReasonDetails } from "./DecisionReasonDetails";
 import type { DecisionReason } from "./decisionWhy";
+import { modeBlockRecovery } from "./controlArming";
 import {
   HEALTH_ROW_LABEL,
   HEALTH_STATUS,
@@ -308,10 +309,6 @@ const RECOVERY: Record<string, string> = {
   "sensor.solar": "Non-critical — solar accounting degrades until the meter returns.",
   "sensor.ev": "Non-critical — the car guard is paused until the meter returns.",
   "sensor.battery": "The battery power reading is delayed; SoC-based decisions may lag.",
-  mode:
-    "Watch-only is forced while Settings → operational is ON. Turn off Watch only under " +
-    "Control & safety (and ensure config.yaml has dev.mode: live and control.dry_run: false), " +
-    "then Apply & restart — or turn operational off if you meant to stay watching.",
   grid_fuse:
     "Open Settings → Control & safety and choose your main fuse (1×25 / 1×35 / 3×25 / 3×35, or " +
     "custom watts). Until then EMS keeps the conservative 1×25 A (5750 W) ceiling.",
@@ -333,6 +330,27 @@ export function batteryRecovery(detail: string): string {
     );
   }
   return RECOVERY.battery;
+}
+
+/** #364 — Dutch run-mode recovery; file-level tokens stay behind Meer. */
+function ModeBlockRecovery() {
+  const [open, setOpen] = useState(false);
+  const { sentence, more } = modeBlockRecovery();
+  return (
+    <>
+      <span data-testid="recovery-mode-sentence">{sentence}</span>{" "}
+      <button
+        type="button"
+        className="help-more"
+        data-testid="recovery-mode-more"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {open ? "Minder" : "Meer"}
+      </button>
+      {open ? <span data-testid="recovery-mode-more-body"> {more}</span> : null}
+    </>
+  );
 }
 
 export function SystemView({
@@ -500,9 +518,13 @@ export function SystemView({
                 <span className="check-status" data-status={c.status}>
                   {STATUS_LABEL[c.status] ?? c.status}
                 </span>
-                {c.status !== "ok" && (c.key === "battery" || RECOVERY[c.key]) && (
+                {c.status !== "ok" && (c.key === "battery" || c.key === "mode" || RECOVERY[c.key]) && (
                   <span className="check-recovery" data-testid={`recovery-${c.key}`}>
-                    {c.key === "battery" ? batteryRecovery(c.detail) : RECOVERY[c.key]}
+                    {c.key === "battery"
+                      ? batteryRecovery(c.detail)
+                      : c.key === "mode"
+                        ? <ModeBlockRecovery />
+                        : RECOVERY[c.key]}
                   </span>
                 )}
               </li>

@@ -8,16 +8,34 @@ import {
 import { AdminAccess } from "./Admin";
 import { AutomationBoundsCard } from "./AutomationBounds";
 import { apiFetch, clearToken } from "./auth";
+import {
+  SETTINGS_SECTION_IDS,
+  parseAppHash,
+  resolveSettingsSection,
+  serialiseAppHash,
+} from "./settingsRoute";
 import { type CarModel, type CarsResp } from "./ev";
 import { HaWizard } from "./HaWizard.tsx";
 import {
+  draftNeedsControlConfirm,
+  restartPendingStatusLabel,
+  savedApplyStatusText,
+} from "./controlArming";
+import {
+  CONTROL_ARM_CONFIRM_CANCEL,
+  CONTROL_ARM_CONFIRM_LABEL,
+  CONTROL_ARM_CONFIRM_TITLE,
+  CONTROL_ARM_CONSEQUENCE,
+  CONTROL_SECTION_HINT,
   DAILY_GRID_CHARGE_CAP,
+  MAX_BUY_PRICE_CAP,
   HOME_NIGHT_RESERVE,
   LIVE_WRITING_PANEL,
   learnedNightKwhFromAdvice,
   nightReserveComfortHours,
   humanize,
 } from "./labels";
+import { attachNumberInputWheel, resolveNumberBlur } from "./numberInput";
 import { liveWritingConditions, type LiveWritingStatus } from "./topbarChips";
 import { SectionIcon } from "./settingsIcons";
 
@@ -164,11 +182,7 @@ const GROUP_HINT: Record<string, string> = {
     "Link washers and dryers from Home Assistant (read-only). URL and token need Apply & restart; "
     + "which appliances you select apply as soon as you save.",
   site: "Location & array — these drive the solar forecast.",
-  control:
-    "Safety limits and arming. Set your main fuse here — until confirmed, System shows a Check "
-    + "and EMS keeps the conservative 1×25 A ceiling. Watch only / Let the system control need "
-    + "Apply & restart — saved ≠ live until then. config.yaml dry_run / mock still always wins "
-    + "over these toggles. Other control knobs apply as soon as you save (active now).",
+  control: CONTROL_SECTION_HINT,
   planner: "Arbitrage maths — these apply as soon as you save; the next plan uses them (active now).",
   ai: "Optional. Off by default. Turn on to get natural-language explanations and the chat — a tiny, "
     + "redacted summary is sent to MiniMax; never your address, history or tokens.",
@@ -245,9 +259,15 @@ function NumberInput({
 }) {
   // Hold the raw text locally so the user can transiently clear/retype without it snapping to 0.
   const [raw, setRaw] = useState(String(value));
+  const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     setRaw(String(value));
   }, [value]);
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    return attachNumberInputWheel(el);
+  }, []);
   // A drag slider (opt-in via field.slider, needs a min+max) — easier to dial than typing, with a
   // live numeric read-out beside it since a range input shows no value of its own.
   if (field.slider && field.min != null && field.max != null) {
@@ -271,23 +291,39 @@ function NumberInput({
       </div>
     );
   }
+  const unitId = field.unit ? `unit-${field.key}` : undefined;
   return (
-    <input
-      id={`set-${field.key}`}
-      type="number"
-      value={raw}
-      disabled={disabled}
-      min={field.min ?? undefined}
-      max={field.max ?? undefined}
-      step={field.step ?? (field.type === "int" ? 1 : "any")}
-      onChange={(e) => setRaw(e.target.value)}
-      onBlur={(e) => {
-        const n = e.target.value === "" ? (field.min ?? 0) : Number(e.target.value);
-        const coerced = field.type === "int" ? Math.round(n) : n;
-        setRaw(String(coerced));
-        onChange(coerced);
-      }}
-    />
+    <span className="number-with-unit">
+      <input
+        ref={inputRef}
+        id={`set-${field.key}`}
+        type="number"
+        value={raw}
+        disabled={disabled}
+        min={field.min ?? undefined}
+        max={field.max ?? undefined}
+        step={field.step ?? (field.type === "int" ? 1 : "any")}
+        aria-describedby={unitId}
+        onChange={(e) => setRaw(e.target.value)}
+        onBlur={(e) => {
+          // Empty keeps the draft. Out of range stays typed so Save still hits the field error.
+          const result = resolveNumberBlur(e.target.value, {
+            min: field.min,
+            max: field.max,
+            integer: field.type === "int",
+          });
+          if (result.action === "restore") {
+            setRaw(String(value));
+            return;
+          }
+          setRaw(String(result.value));
+          if (result.value !== value) onChange(result.value);
+        }}
+      />
+      {field.unit && (
+        <span className="number-unit-suffix" id={unitId} data-testid={`unit-${field.key}`}>{field.unit}</span>
+      )}
+    </span>
   );
 }
 
@@ -309,16 +345,25 @@ function Field({
   onChange: (v: number | boolean | string) => void;
 }) {
   const id = `set-${field.key}`;
-  const labelText = field.key === "planner.max_daily_grid_charge_kwh"
-    ? DAILY_GRID_CHARGE_CAP.label
-    : field.label;
-  const helpText = field.key === "planner.max_daily_grid_charge_kwh"
-    ? DAILY_GRID_CHARGE_CAP.help
-    : field.help;
+  // Number boxes show the unit inside the field (#366). Sliders keep the label unit.
+  const unitInField =
+    Boolean(field.unit) && !field.slider && (field.type === "number" || field.type === "int");
+  const labelText =
+    field.key === "planner.max_daily_grid_charge_kwh"
+      ? DAILY_GRID_CHARGE_CAP.label
+      : field.key === "planner.max_buy_eur_per_kwh"
+        ? MAX_BUY_PRICE_CAP.label
+        : field.label;
+  const helpText =
+    field.key === "planner.max_daily_grid_charge_kwh"
+      ? DAILY_GRID_CHARGE_CAP.help
+      : field.key === "planner.max_buy_eur_per_kwh"
+        ? MAX_BUY_PRICE_CAP.help
+        : field.help;
   const label = (
     <label htmlFor={id} className="field-label">
       {labelText}
-      {field.unit && <span className="field-unit"> ({field.unit})</span>}
+      {field.unit && !unitInField && <span className="field-unit"> ({field.unit})</span>}
       {field.applies === "restart" ? (
         <span
           className={`field-badge field-badge-restart${restartPending ? " field-badge-pending" : ""}`}
@@ -329,7 +374,7 @@ function Field({
               : "Takes effect after Apply & restart — saved ≠ live yet"
           }
         >
-          {restartPending ? "restart_pending" : "needs restart"}
+          {restartPendingStatusLabel(Boolean(restartPending))}
         </span>
       ) : (
         <span
@@ -560,10 +605,8 @@ export function Settings({
   identityAuth = false,
 }: {
   onSaved?: (values: Values) => void;
-  // Deep-link: open this section on mount (e.g. System's "solar" health action → "planner", or
-  // Car's "Manage → Settings → Car" → "ev"). Runtime state only — reuses the same openSection
-  // machinery a sidebar click uses, so it needs no hash segment of its own (CLAUDE.md: keep the
-  // canonical #manage/settings hash simple).
+  // Deep-link: open this section (#manage/settings/<id>, e.g. System's solar action → "planner",
+  // or Car's "Manage → Settings → Car" → "ev"). Kept in sync with the hash, including back/forward.
   initialSection?: string;
   // Reader read-only mode (auth slice 2 web): every field renders disabled and the save bar never
   // appears — mirrors the API's 403 on writes rather than inventing a new client-side rule.
@@ -596,7 +639,15 @@ export function Settings({
   const [solarAdviceApplied, setSolarAdviceApplied] = useState(false);
   const [cars, setCars] = useState<CarModel[] | null>(null);
   // --- Two-pane shell navigation state ---
-  const [activeSection, setActiveSection] = useState<string | null>(null);
+  // Seed from the hash-driven prop so a reload paints the bookmarked section (mobile included).
+  const [activeSection, setActiveSection] = useState<string | null>(() =>
+    initialSection
+      ? (resolveSettingsSection(initialSection, SETTINGS_SECTION_IDS) ?? initialSection)
+      : null,
+  );
+  // Tracks which hash section has been applied. Compared during render (below, once mobileList
+  // exists) so browser-back updates the open section in the same pass as the prop.
+  const [appliedSection, setAppliedSection] = useState(initialSection);
   const [search, setSearch] = useState("");
   // Which sections have their in-place "Advanced" disclosure expanded (collapsed by default).
   const [advancedOpen, setAdvancedOpen] = useState<Set<string>>(new Set());
@@ -606,8 +657,23 @@ export function Settings({
   const [restartPending, setRestartPending] = useState<Set<string>>(new Set());
   const [restartPendingKeys, setRestartPendingKeys] = useState<Set<string>>(new Set());
   const [lastSaveRestart, setLastSaveRestart] = useState(false);
+  // #364: extra confirm before a draft that arms live control is posted.
+  const [armConfirming, setArmConfirming] = useState(false);
   // Mobile drill-in (≤700px): start on the section list, then drill into one section.
-  const [mobileList, setMobileList] = useState(true);
+  // A hash with a section opens that section; bare #manage stays on the list.
+  const [mobileList, setMobileList] = useState(() => !initialSection);
+  if (initialSection !== appliedSection) {
+    setAppliedSection(initialSection);
+    if (!initialSection) {
+      setMobileList(true);
+      setActiveSection(null);
+    } else {
+      setActiveSection(
+        resolveSettingsSection(initialSection, SETTINGS_SECTION_IDS) ?? initialSection,
+      );
+      setMobileList(false);
+    }
+  }
 
   // --- I3 "Apply & restart" (spec §B.4) ---
   // Server-computed capability + pending flag (GET /api/auth/me — I2). Independent of the
@@ -624,6 +690,10 @@ export function Settings({
   // Guards the /health/live poll's setState calls against firing after unmount (the poll is a
   // plain async loop, not itself inside an effect, so it needs its own liveness flag).
   const restartAliveRef = useRef(true);
+  // True after this view pushed #manage/settings/<id>. The mobile "All settings" button pops that
+  // entry (browser-back). A section opened from a copied URL did not push, so the button writes
+  // #manage instead of leaving the app.
+  const sectionPushedRef = useRef(false);
   useEffect(() => {
     // Reset to true on setup (not just false on cleanup): under React.StrictMode dev runs
     // setup→cleanup→setup, so without this the ref would stay false after the first cleanup and
@@ -773,13 +843,19 @@ export function Settings({
     };
   }, []);
 
-  // Deep-link on mount: open the requested section straight away (no extra click), reusing the
-  // exact openSection() a sidebar click would call — same mobileList/highlight behaviour. Runs
-  // once; later navigation is owned by the user's own clicks, not this prop.
+  // Follow the hash (reload, deep link, browser back/forward). Does not write the hash — a click
+  // already pushed it, and writing here would replace that history entry.
   useEffect(() => {
-    if (initialSection) openSection(initialSection);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!initialSection) {
+      sectionPushedRef.current = false;
+      setMobileList(true);
+      setActiveSection(null);
+      return;
+    }
+    const resolved = resolveSettingsSection(initialSection, SETTINGS_SECTION_IDS) ?? initialSection;
+    setActiveSection(resolved);
+    setMobileList(false);
+  }, [initialSection]);
 
   // Best-effort advisory fetch — hide the hint entirely on error or when there's not yet enough
   // evidence (null), never surface it as a load error.
@@ -863,6 +939,11 @@ export function Settings({
   const restartChanged = (schema ?? []).some(
     (f) => f.applies === "restart" && f.key in changed,
   );
+  const armsLive = draftNeedsControlConfirm(values, edited);
+  const showArmConfirm = armsLive && armConfirming;
+  useEffect(() => {
+    if (!armsLive) setArmConfirming(false);
+  }, [armsLive]);
 
   // Live "impact on the algorithm": when planner economics are edited, recompute the plan with the
   // proposed values (debounced, read-only) and show the before/after so the effect is visible.
@@ -940,6 +1021,31 @@ export function Settings({
       const f = (schema ?? []).find((x) => x.key === highlight);
       if (f?.advanced) setAdvancedOpen((prev) => new Set([...prev, group]));
     }
+    // Push #manage/settings/<id>. Dispatch hashchange in this turn: the browser's own event can
+    // land after a later back/forward and would otherwise leave the previous section on screen.
+    const next = serialiseAppHash("manage", "settings", group);
+    const current = window.location.hash.replace(/^#\/?/, "");
+    if (current !== next) {
+      sectionPushedRef.current = true;
+      window.location.hash = next;
+    }
+    window.dispatchEvent(new Event("hashchange"));
+  }
+
+  // Mobile "← All settings": pop the section entry this view pushed. A bookmarked section was
+  // not pushed here, so point the hash at bare #manage (still a history step, still the list).
+  function backToAllSettings() {
+    if (sectionPushedRef.current) {
+      sectionPushedRef.current = false;
+      window.history.back();
+      return;
+    }
+    if (parseAppHash(window.location.hash).settingsSection) {
+      window.location.hash = serialiseAppHash("manage", "settings");
+      window.dispatchEvent(new Event("hashchange"));
+      return;
+    }
+    setMobileList(true);
   }
 
   function handleNavClick(group: string) {
@@ -949,6 +1055,10 @@ export function Settings({
   }
 
   async function save() {
+    if (draftNeedsControlConfirm(values, edited) && !armConfirming) {
+      setArmConfirming(true);
+      return;
+    }
     setStatus("saving");
     setErrors({});
     const restartGroups = (schema ?? [])
@@ -980,6 +1090,7 @@ export function Settings({
       setValues(b.values);
       setEdited(b.values);
       setSolarAdviceApplied(false);
+      setArmConfirming(false);
       setStatus("saved");
       setBoundsRefreshKey((k) => k + 1);
       if (restartGroups.length) {
@@ -1004,6 +1115,7 @@ export function Settings({
     setErrors({});
     setStatus("idle");
     setSolarAdviceApplied(false);
+    setArmConfirming(false);
   }
 
   if (loadError) {
@@ -1231,7 +1343,7 @@ export function Settings({
               <div className="override-controls">
                 <button
                   type="button"
-                  className="btn-primary"
+                  className="btn-danger"
                   data-testid="restart-confirm"
                   disabled={restartPhase === "requesting"}
                   onClick={requestRestart}
@@ -1358,7 +1470,7 @@ export function Settings({
             type="button"
             className="settings-back"
             data-testid="settings-back"
-            onClick={() => setMobileList(true)}
+            onClick={backToAllSettings}
           >
             ← All settings
           </button>
@@ -1478,8 +1590,19 @@ export function Settings({
       {showSaveBar && (
         <div className="settings-savebar" data-testid="settings-savebar">
           <div className="settings-savebar-inner">
+            {armsLive && (
+              <p
+                id="control-arm-consequence"
+                className="override-consequence settings-arm-consequence"
+                data-testid="control-arm-consequence"
+                role="status"
+                aria-live="polite"
+              >
+                {CONTROL_ARM_CONSEQUENCE}
+              </p>
+            )}
             <div className="settings-savebar-msg">
-              {dirty && (
+              {dirty && !showArmConfirm && (
                 <span className="settings-dirty" data-testid="settings-dirty">
                   {changeCount} unsaved change{changeCount === 1 ? "" : "s"}
                   {restartChanged ? " · some apply on restart" : ""}
@@ -1487,25 +1610,67 @@ export function Settings({
               )}
               {status === "saved" && (
                 <span className="settings-msg-ok" data-testid="settings-saved">
-                  {lastSaveRestart
-                    ? "Saved — restart_pending (boot still runs old values until Apply & restart)"
-                    : "Saved — active now"}
+                  {savedApplyStatusText(lastSaveRestart)}
                 </span>
               )}
               {status === "error" && errors._ && (
                 <span className="settings-msg-err">{errors._}</span>
               )}
             </div>
-            <div className="settings-savebar-actions">
-              <button className="btn-ghost" data-testid="settings-discard" onClick={reset}
-                disabled={!dirty}>
-                Discard
-              </button>
-              <button className="btn-primary" data-testid="settings-save" onClick={save}
-                disabled={!dirty || status === "saving"}>
-                {status === "saving" ? "Saving…" : "Save"}
-              </button>
-            </div>
+            {showArmConfirm ? (
+              <div
+                className="override-confirm settings-arm-confirm"
+                data-testid="control-arm-confirm"
+                role="dialog"
+                aria-labelledby="control-arm-confirm-title"
+              >
+                <p className="override-confirm-title" id="control-arm-confirm-title">
+                  {CONTROL_ARM_CONFIRM_TITLE}
+                </p>
+                <div className="override-controls">
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    data-testid="control-arm-confirm-save"
+                    aria-describedby="control-arm-consequence"
+                    disabled={status === "saving"}
+                    onClick={() => void save()}
+                  >
+                    {status === "saving" ? "Saving…" : CONTROL_ARM_CONFIRM_LABEL}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    data-testid="control-arm-cancel"
+                    disabled={status === "saving"}
+                    onClick={() => setArmConfirming(false)}
+                  >
+                    {CONTROL_ARM_CONFIRM_CANCEL}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="settings-savebar-actions">
+                <button className="btn-ghost" data-testid="settings-discard" onClick={reset}
+                  disabled={!dirty}>
+                  Discard
+                </button>
+                <button
+                  className="btn-primary"
+                  data-testid="settings-save"
+                  disabled={!dirty || status === "saving"}
+                  onClick={() => {
+                    if (armsLive) {
+                      setArmConfirming(true);
+                      return;
+                    }
+                    void save();
+                  }}
+                >
+                  {status === "saving" ? "Saving…" : "Save"}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

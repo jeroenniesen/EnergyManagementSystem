@@ -32,6 +32,7 @@ class PlanService:
             "strategy": plan.strategy,
             "target_soc": plan.target_soc,
             "deadline": plan.deadline.isoformat() if plan.deadline else None,
+            "solar_basis": plan.solar_basis,
             "current_intent": cur.intent if cur else None,
             "current_reason": cur.reason if cur else None,
             "validation": validate(plan, effective_now).to_dict(),

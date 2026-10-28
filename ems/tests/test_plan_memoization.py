@@ -14,10 +14,18 @@ from zoneinfo import ZoneInfo
 import httpx
 from fastapi.testclient import TestClient
 
+from ems.clock import FrozenClock
+from ems.consumers.start_advice import (
+    accepted_load_bump_w,
+    accepted_windows_revision,
+    forget_accepted_window,
+    remember_accepted_window,
+)
 from ems.control import service as control_svc
 from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
+from ems.storage.cache import CacheStore
 from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
@@ -335,3 +343,58 @@ def test_concurrent_poll_single_flight_plan_build(tmp_path):
     assert all(r.status_code == 200 for r in results)
     builds = svc.plan_builds - before
     assert builds == 1, f"single-flight failed: {builds} plan builds under concurrent load"
+
+
+def test_accepted_window_changes_plan_cache_key_and_load(tmp_path):
+    """#334: accepting a window misses the plan cache and adds exact watts; cancel clears both."""
+    app = _app(tmp_path)
+    svc = app.state.control_service
+
+    async def go():
+        async with app.router.lifespan_context(app):
+            cache = CacheStore(str(tmp_path / "advice.sqlite"))
+            cache.init()
+            svc._cache_store = cache
+            assert svc.plan_with_recovery() is not None
+            builds = svc.plan_builds
+            key_before = svc._ctx.plan_cache["key"]
+            assert key_before[1] == ""
+
+            now = svc._clock.now_utc()
+            start = (now + timedelta(hours=2)).replace(minute=0, second=0, microsecond=0)
+            if start <= now:
+                start = start + timedelta(hours=1)
+            end = start + timedelta(hours=1)
+            inside = [start + timedelta(minutes=15 * i) for i in range(4)]
+            outside = start - timedelta(minutes=15)
+            before = svc.load_by(inside + [outside])
+            remember_accepted_window(cache, "mock-washer-1", start, end, 4, 1.0, now)
+            after = svc.load_by(inside + [outside])
+            for slot in inside:
+                assert after[slot] - before[slot] == 1000.0
+            assert after[outside] - before[outside] == 0.0
+            assert accepted_load_bump_w(cache, inside, svc._clock)[inside[0]] == 1000.0
+
+            assert svc.plan_with_recovery() is not None
+            assert svc.plan_builds == builds + 1
+            key_mid = svc._ctx.plan_cache["key"]
+            assert key_mid != key_before
+            assert key_mid[1] != ""
+
+            assert forget_accepted_window(cache, "mock-washer-1", now) is True
+            cleared = svc.load_by(inside + [outside])
+            assert cleared == before
+            assert svc.plan_with_recovery() is not None
+            assert svc.plan_builds == builds + 2
+            assert svc._ctx.plan_cache["key"][1] == ""
+
+            remember_accepted_window(cache, "mock-washer-1", start, end, 4, 1.0, now)
+            svc._clock = FrozenClock(end)
+            assert accepted_windows_revision(cache, svc._clock) == ""
+            assert svc.plan_with_recovery() is not None
+            assert svc.plan_builds == builds + 3
+            assert svc._ctx.plan_cache["key"][1] == ""
+            expired = svc.load_by(inside)
+            assert expired == {slot: before[slot] for slot in inside}
+
+    asyncio.run(go())
