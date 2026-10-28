@@ -206,6 +206,46 @@ describe("formatBatteryActionWhy (#85 slice 1)", () => {
   });
 });
 
+describe("formatBatteryActionWhy hold reasons (#397)", () => {
+  const knownReasons = [
+    ["avondreserve", "Ochtend ingehouden voor avondpiek", "energie voor de avondpiek"],
+    ["batterijvloer", "Op de batterijvloer (10%) — huis op net", "woning krijgt stroom van het net"],
+    ["komende piek", "hold cheap energy for the coming peak (now €0.12/kWh)", "voor de komende piek"],
+    ["minimumreserve", "hold reserve: serving this slot would cross the reserve floor", "boven de minimumreserve"],
+    ["exportpiek", "handelen: vasthouden voor exportpiek (nu €0.12/kWh)", "voor de exportpiek"],
+    ["verouderde meter", "Voorzichtig: meter verouderd — hold reserve while meter data is uncertain", "metergegevens verouderd"],
+  ] as const;
+
+  it.each(knownReasons)("explains %s from DecisionReason.summary", (_name, summary, expected) => {
+    const live = formatBatteryActionWhy(reason({ summary }), "hold", { dryRun: false });
+    const dry = formatBatteryActionWhy(reason({ summary }), "hold", { dryRun: true });
+    expect(live).toContain(expected);
+    expect(dry).toContain(expected.replace("woning krijgt", "woning zou"));
+    expect(live).not.toContain("EMS beschermt de reserve:");
+    expect(dry).toMatch(/\bzou\b/);
+  });
+
+  it("keeps the existing fallback when the summary is empty or unknown", () => {
+    const holdWindow = {
+      start: null,
+      end: null,
+      intent: "hold_reserve",
+      label: "hold-reserve window",
+      eur_per_kwh_min: null,
+      eur_per_kwh_max: null,
+    };
+    for (const summary of ["", "Grid top-up is planned to reach the battery target."]) {
+      const unknown = reason({ summary, chosen_window: holdWindow });
+      expect(formatBatteryActionWhy(unknown, "hold", { dryRun: false })).toBe(
+        "EMS beschermt de reserve: de batterij blijft boven je minimumreserve. Verwacht voordeel ≈ €1.25.",
+      );
+      expect(formatBatteryActionWhy(unknown, "hold", { dryRun: true })).toBe(
+        "EMS zou de reserve beschermen en de batterij niet verder ontladen. Verwacht voordeel ≈ €1.25.",
+      );
+    }
+  });
+});
+
 describe("formatBatteryActionWhy (#85 slice 2)", () => {
   it("uses the literal known-power-exceedance pause copy", () => {
     const text = formatBatteryActionWhy(
