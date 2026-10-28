@@ -3,12 +3,14 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ems.domain import RawSample
 from ems.load_model import reconstruct
 from ems.sources.mock import MockSource
 from ems.storage.history import HistoryStore
+from ems.tests.conftest import amsterdam_instant
 from ems.web.api import create_app
 
 AMS = ZoneInfo("Europe/Amsterdam")
@@ -16,7 +18,20 @@ AMS = ZoneInfo("Europe/Amsterdam")
 
 def _app(db: str):
     return create_app(MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
-                       store=HistoryStore(db))
+                       store=HistoryStore(db), history_purge_enabled=False)
+
+
+def _freeze_accuracy_clock(monkeypatch, frozen_utc: datetime) -> None:
+    """Pin the `/api/accuracy` route's `datetime.now(UTC)` (#424) so the seeded evidence and the
+    endpoint's 14/60-day windows share one instant, whatever the wall clock or DST state."""
+    import ems.web.routes.accuracy as accuracy_mod
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen_utc if tz is None else frozen_utc.astimezone(tz)
+
+    monkeypatch.setattr(accuracy_mod, "datetime", _FrozenDatetime)
 
 
 def _seed_solar_evidence(store: HistoryStore, now: datetime) -> None:
@@ -57,20 +72,43 @@ def _seed_plan_execution_evidence(store: HistoryStore, now: datetime) -> None:
 def _seed_load_baseline_evidence(store: HistoryStore, now: datetime) -> None:
     # 6 hour-buckets x 8 weekly occurrences, all inside the last 60 days -> 5 evaluable hours per
     # bucket (indices 3..7, needing >= 3 priors) = 30 evaluable hours, above the 24 minimum.
-    anchor = now - timedelta(days=50)
+    # `load_baseline_error` buckets by LOCAL (weekday, hour), so the weekly series is built in site
+    # wall-clock time: stepping 7 UTC-days would drift one local hour across a DST change and split
+    # every bucket in two (#424: 27 / 24 / None instead of 30). Stored as UTC instants, like prod.
+    day0 = (now.astimezone(AMS) - timedelta(days=50)).date()
     for hour in (3, 7, 11, 15, 19, 23):
         for week in range(8):
-            ts = (anchor + timedelta(days=7 * week, hours=hour)).isoformat()
+            wall = datetime.combine(day0 + timedelta(days=7 * week), datetime.min.time())
+            ts = (wall + timedelta(hours=hour)).replace(tzinfo=AMS).astimezone(UTC).isoformat()
             raw = RawSample(grid_power_w=500.0, solar_power_w=0.0, battery_power_w=0.0,
                             ev_power_w=0.0, soc_pct=50.0)
             asyncio.run(store.record(ts, raw, reconstruct(raw)))
 
 
-def test_accuracy_endpoint_returns_all_three_tracks_with_enough_evidence(tmp_path):
+# Fixed simulated clocks (#424): today (2026-10-28), +2 and +30 days, either side of the
+# 2026-10-25 (CEST->CET) and 2027-03-28 (CET->CEST) DST changes, and a summer control. 12:00 local
+# keeps the 12 h of seeded solar slots inside daylight so the all-ok health assert stays about DST.
+_CLOCKS = {
+    "today": amsterdam_instant(2026, 10, 28, 12),
+    "plus-2-days": amsterdam_instant(2026, 10, 30, 12),
+    "plus-30-days": amsterdam_instant(2026, 11, 27, 12),
+    "before-autumn-dst": amsterdam_instant(2026, 10, 24, 12),
+    "autumn-dst-day": amsterdam_instant(2026, 10, 25, 12),
+    "after-autumn-dst": amsterdam_instant(2026, 10, 26, 12),
+    "before-spring-dst": amsterdam_instant(2027, 3, 27, 12),
+    "spring-dst-day": amsterdam_instant(2027, 3, 28, 12),
+    "after-spring-dst": amsterdam_instant(2027, 3, 29, 12),
+    "summer": amsterdam_instant(2026, 7, 1, 12),
+}
+
+
+@pytest.mark.parametrize("now", _CLOCKS.values(), ids=_CLOCKS.keys())
+def test_accuracy_endpoint_returns_all_three_tracks_with_enough_evidence(
+        tmp_path, monkeypatch, now):
     db = str(tmp_path / "ems.sqlite")
     store = HistoryStore(db)
     asyncio.run(store.init())
-    now = datetime.now(UTC)
+    _freeze_accuracy_clock(monkeypatch, now)
     _seed_solar_evidence(store, now)
     _seed_plan_execution_evidence(store, now)
     _seed_load_baseline_evidence(store, now)
