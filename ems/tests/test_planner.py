@@ -333,7 +333,7 @@ def test_buy_pool_golden_plan_slots_unchanged_fixed_arbitrage():
     plan = plan_rule_based(_arbitrage_prices(), MIDNIGHT)
     digest = hashlib.sha256(repr(_control_signature(plan)).encode()).hexdigest()
     assert digest == (
-        "11422461a3e8184006d9b06ae8ed53b34bd78d9457e8f5837a3ecf86870bd99b"
+        "9b6e9d29a18f6643836e02a5d6877db49079a59c292bac04a26bd02cf73ca2b1"
     )
 
 
@@ -394,6 +394,12 @@ def test_empty_buy_pool_fixture_summary_in_decision_reason():
     # Wall clock of the Amsterdam slot, not UTC.
     assert plan.buy_pool.cheapest_slot.start.strftime("%H:%M") in summary
     assert "€0,27" in summary
+    from ems.planner.economics import max_buy_for_peak
+
+    # Default PlannerConfig: peak €0.37, rte 0.90, wear €0.05, risk €0.02 → €0.27.
+    assert plan.buy_pool.max_buy_eur_per_kwh == max_buy_for_peak(
+        0.37, rte=0.90, deg=0.05, risk=0.02,
+    )
     assert summary.count("Geen koopmoment") == 1
     assert all("Geen koopmoment" not in s.reason for s in plan.slots)
 
@@ -481,3 +487,164 @@ def test_winter_already_bought_8_kwh_leaves_at_most_4():
     charged = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
     assert len(charged) <= 4
     assert len(charged) == 4
+
+
+def test_winter_refuses_new_charge_when_the_cycle_budget_is_spent():
+    """#318: after 1.5 EFC today the winter planner names 'Cycle-budget op' and stops buying."""
+    t0 = datetime(2026, 1, 15, 0, 0, tzinfo=AMS)
+    prices = (
+        [PriceSlot(t0 + i * SLOT, 0.05) for i in range(40)]
+        + [PriceSlot(t0 + (40 + i) * SLOT, 0.80) for i in range(16)]
+    )
+    common = dict(
+        charge_slots=30, discharge_slots=8, round_trip_efficiency=1.0,
+        degradation_eur_per_kwh=0.0, risk_margin_eur_per_kwh=0.0,
+        max_daily_grid_charge_kwh=80.0,
+    )
+
+    def _n(max_cycles: float, charged: float = 0.0) -> int:
+        plan = plan_rule_based(
+            prices, t0, PlannerConfig(
+                **common, max_cycles_per_day=max_cycles,
+                charged_today_kwh=charged, discharged_today_kwh=0.0,
+            ),
+            max_charge_w=4000.0, usable_kwh=10.0,
+        )
+        return sum(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in plan.slots)
+
+    assert _n(2.0) > _n(1.0) > _n(0.5)
+    spent = plan_rule_based(
+        prices, t0, PlannerConfig(
+            **common, max_cycles_per_day=1.5, charged_today_kwh=30.0,
+        ),
+        max_charge_w=4000.0, usable_kwh=10.0,
+    )
+    assert not any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in spent.slots)
+    assert any(s.reason == "Cycle-budget op (1,5 EFC)" for s in spent.slots)
+
+
+# --- #326 evening reserve (F-17 / F-24) -----------------------------------------------------------
+_EVENING_HOLD = "Ochtend ingehouden voor avondpiek"
+_EMS326_NOW = datetime(2026, 1, 15, 0, 0, tzinfo=AMS)
+
+
+def _ems326_price(dt: datetime, *, evening: bool) -> float:
+    hour = dt.hour
+    if 7 <= hour < 9:
+        return 0.40
+    if evening and 18 <= hour < 21:
+        return 0.45
+    if hour < 7:
+        return 0.05
+    if hour >= 21:
+        return 0.08
+    return 0.12
+
+
+def _ems326_load_shaped(dt: datetime) -> float:
+    hour = dt.hour
+    if 7 <= hour < 9:
+        return 3000.0
+    if 18 <= hour < 21:
+        return 1000.0
+    return 0.0
+
+
+def _ems326_load_evening_only(dt: datetime) -> float:
+    hour = dt.hour
+    if 18 <= hour < 21:
+        return 200.0
+    return 0.0
+
+
+def _ems326_plan(price_of, load_of, soc_pct: float):
+    prices = [
+        PriceSlot(_EMS326_NOW + i * SLOT, price_of(_EMS326_NOW + i * SLOT))
+        for i in range(96)
+    ]
+    load = {p.start: load_of(p.start) for p in prices}
+    plan = plan_rule_based(
+        prices, _EMS326_NOW, PlannerConfig(round_trip_efficiency=0.90, site_tz=AMS),
+        soc_pct=soc_pct, load_w_by=load, usable_kwh=10.0, reserve_soc_pct=10.0,
+        max_charge_w=4000.0, max_discharge_w=4000.0,
+    )
+    return prices, load, plan
+
+
+def _ems326_row(slot) -> dict:
+    return {
+        "start": slot.start.isoformat(),
+        "intent": slot.intent.value,
+        "reason": slot.reason,
+        "target_soc": slot.target_soc,
+        "power_w": slot.power_w,
+        "floor_soc": slot.floor_soc,
+        "deadline": slot.deadline.isoformat() if slot.deadline else None,
+    }
+
+
+def test_morning_discharge_holds_energy_for_the_evening_peak():
+    """#326 AC1: morning peak must not spend the energy the evening peak still needs."""
+    import json
+    from pathlib import Path
+
+    from ems.planner.projection import BatteryModel, evening_reserve_kwh, project_energy
+
+    _prices, load, plan = _ems326_plan(
+        lambda dt: _ems326_price(dt, evening=True), _ems326_load_shaped, 60.0,
+    )
+    golden = json.loads(
+        Path("ems/tests/fixtures/evening_reserve_golden.json").read_text()
+    )
+    charge = [_ems326_row(s) for s in plan.slots
+              if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert charge == golden["multi_peak_charge_slots"]
+    assert not any(s.intent is BatteryIntent.EXPORT_FOR_PROFIT for s in plan.slots)
+    held = [s for s in plan.slots if s.reason == _EVENING_HOLD]
+    assert [s.start.strftime("%H:%M") for s in held] == ["08:45"]
+    assert all(s.intent is BatteryIntent.HOLD_RESERVE for s in held)
+    morning = [
+        s for s in plan.slots
+        if s.start.astimezone(AMS).hour in (7, 8) and s.reason != _EVENING_HOLD
+    ]
+    assert morning and all(s.intent is BatteryIntent.DISCHARGE_FOR_LOAD for s in morning)
+    need, evening_start = evening_reserve_kwh(
+        plan.slots, load_w_by=load, usable_kwh=10.0, reserve_soc_pct=10.0,
+        max_discharge_w=4000.0, round_trip_efficiency=0.90, site_tz=AMS,
+    )
+    assert evening_start == datetime(2026, 1, 15, 18, 0, tzinfo=AMS)
+    model = BatteryModel(
+        usable_kwh=10.0, max_charge_w=4000.0, max_discharge_w=4000.0,
+        round_trip_efficiency=0.90, reserve_soc_pct=10.0,
+    )
+    proj = project_energy(
+        plan.slots, start_soc_pct=60.0, solar_w_by={}, load_w_by=load, model=model,
+        charge_target_soc_pct=plan.target_soc,
+    )
+    entering = next(
+        p for p in proj
+        if p.start.astimezone(AMS).hour == 17 and p.start.astimezone(AMS).minute == 45
+    )
+    soc_kwh = entering.soc_pct / 100.0 * 10.0
+    assert soc_kwh >= 1.0 + need
+    assert soc_kwh == 4.466014094705338
+
+
+def test_evening_reserve_leaves_no_peak_and_enough_soc_plans_unchanged():
+    """#326 AC2: no evening peak, or enough SoC, keeps today's full slot list."""
+    import json
+    from pathlib import Path
+
+    golden = json.loads(
+        Path("ems/tests/fixtures/evening_reserve_golden.json").read_text()
+    )
+    _, _, no_eve = _ems326_plan(
+        lambda dt: _ems326_price(dt, evening=False), _ems326_load_shaped, 60.0,
+    )
+    _, _, enough = _ems326_plan(
+        lambda dt: _ems326_price(dt, evening=True), _ems326_load_evening_only, 100.0,
+    )
+    assert [_ems326_row(s) for s in no_eve.slots] == golden["no_evening_peak"]
+    assert [_ems326_row(s) for s in enough.slots] == golden["enough_soc"]
+    assert not any(s.reason == _EVENING_HOLD for s in no_eve.slots)
+    assert not any(s.reason == _EVENING_HOLD for s in enough.slots)

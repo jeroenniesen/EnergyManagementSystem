@@ -778,6 +778,27 @@ test.describe("EMS settings", () => {
   });
 
   // #317 / F-03 / F-32: daily grid-charge cap is a Strategy slider, visible without Advanced.
+  test("#323: must-charge strategy fields visible (basic + advanced)", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("group-strategy").click();
+    await expect(page.getByTestId("field-planner.must_charge_enabled")).toBeVisible();
+    await expect(page.getByTestId("field-planner.must_charge_target_soc")).toBeVisible();
+    await page.getByTestId("settings-advanced-toggle").click();
+    await expect(page.getByTestId("field-planner.must_charge_max_price_eur_per_kwh")).toBeVisible();
+    await expect(page.getByTestId("field-planner.must_charge_buffer_pp")).toBeVisible();
+  });
+
+  test("#324: max buy price field is on Strategy without Advanced", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("group-strategy").click();
+    const field = page.getByTestId("field-planner.max_buy_eur_per_kwh");
+    await expect(field).toBeVisible();
+    await expect(field.getByText("Max. inkoopprijs")).toBeVisible();
+    await expect(page.getByTestId("settings-advanced-body")).toHaveCount(0);
+  });
+
   test("daily grid-charge cap slider is on Strategy without Advanced", async ({ page }) => {
     await page.goto("/");
     await page.getByTestId("nav-manage").click();

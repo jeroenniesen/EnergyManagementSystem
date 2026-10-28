@@ -2,7 +2,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from ems.freshness import Freshness, FreshnessTracker, classify
+from ems.freshness import (
+    Freshness,
+    FreshnessTracker,
+    StaleMeterHysteresis,
+    classify,
+    stale_flags,
+)
 
 T0 = datetime(2026, 6, 27, 10, 0, tzinfo=UTC)
 
@@ -45,6 +51,57 @@ def test_snapshot_surfaces_registered_missing_signals():
     assert snap["grid"] == "fresh"
     assert snap["solar"] == "missing"
     assert snap["soc"] == "missing"
+
+
+def test_stale_meter_hysteresis_clears_after_two_fresh_cycles():
+    h = StaleMeterHysteresis()
+    stale_snap = {"ev": "stale", "grid": "fresh"}
+    assert h.stale_signals(stale_snap) == {"ev"}
+    fresh_snap = {"ev": "fresh", "grid": "fresh"}
+    assert h.stale_signals(fresh_snap) == {"ev"}
+    assert h.stale_signals(fresh_snap) == set()
+
+
+def test_stale_meter_hysteresis_flap_reset_needs_two_fresh_after_re_stale():
+    h = StaleMeterHysteresis()
+    ev_stale = {"ev": "stale", "grid": "fresh"}
+    ev_fresh = {"ev": "fresh", "grid": "fresh"}
+    assert h.stale_signals(ev_stale) == {"ev"}
+    assert h.stale_signals(ev_fresh) == {"ev"}
+    assert h.stale_signals(ev_stale) == {"ev"}
+    assert h.stale_signals(ev_fresh) == {"ev"}
+    assert h.stale_signals(ev_fresh) == set()
+
+
+def test_stale_meter_hysteresis_flap_reset_grid_signal():
+    h = StaleMeterHysteresis()
+    grid_stale = {"ev": "fresh", "grid": "stale"}
+    grid_fresh = {"ev": "fresh", "grid": "fresh"}
+    assert h.stale_signals(grid_stale) == {"grid"}
+    assert h.stale_signals(grid_fresh) == {"grid"}
+    assert h.stale_signals(grid_stale) == {"grid"}
+    assert h.stale_signals(grid_fresh) == {"grid"}
+    assert h.stale_signals(grid_fresh) == set()
+
+
+def test_missing_meter_not_stale_until_ever_fresh():
+    h = StaleMeterHysteresis()
+    assert h.stale_signals({"ev": "missing", "grid": "fresh"}) == set()
+    assert h.stale_signals({"ev": "fresh", "grid": "fresh"}) == set()
+    assert h.stale_signals({"ev": "missing", "grid": "fresh"}) == {"ev"}
+
+
+def test_stale_flags_callable_exception_treated_as_stale(caplog):
+    def _boom(_now):
+        raise RuntimeError("meter read failed")
+
+    with caplog.at_level("WARNING"):
+        assert stale_flags(_boom, T0) == (True, True)
+    assert "stale_signals callable failed" in caplog.text
+
+
+def test_stale_flags_none_is_not_stale():
+    assert stale_flags(None, T0) == (False, False)
 
 
 def test_naive_datetime_rejected():

@@ -662,3 +662,35 @@ def test_purge_trims_notifications_by_ts_but_keeps_recent(tmp_path):
     deleted, rows = asyncio.run(run())
     assert deleted >= 1
     assert [r["body"] for r in rows] == ["kept"]
+
+
+def test_read_charged_discharged_kwh_for_one_local_day(tmp_path):
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from ems.storage.history import read_charged_discharged_kwh
+
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    ams = ZoneInfo("Europe/Amsterdam")
+
+    async def run():
+        await store.init()
+        charge = RawSample(
+            grid_power_w=0, solar_power_w=0, battery_power_w=-4000, ev_power_w=0, soc_pct=40,
+        )
+        discharge = RawSample(
+            grid_power_w=0, solar_power_w=0, battery_power_w=2000, ev_power_w=0, soc_pct=50,
+        )
+        await store.record("2026-06-15T08:00:00+00:00", charge, reconstruct(charge))
+        await store.record("2026-06-15T16:00:00+00:00", discharge, reconstruct(discharge))
+
+    asyncio.run(run())
+    start = datetime(2026, 6, 15, tzinfo=ams).astimezone(UTC).isoformat()
+    end = datetime(2026, 6, 16, tzinfo=ams).astimezone(UTC).isoformat()
+    now = datetime(2026, 6, 15, 18, tzinfo=UTC).isoformat()
+    charged, discharged = read_charged_discharged_kwh(
+        str(tmp_path / "ems.sqlite"), start, end, now_iso=now,
+    )
+    assert charged == 1.0
+    assert discharged == 0.5
+    assert read_charged_discharged_kwh(str(tmp_path / "missing.sqlite"), start, end) is None
