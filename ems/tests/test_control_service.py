@@ -23,6 +23,7 @@ from ems.control.service import ControlContext, ControlService
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
 from ems.planner.budgets import ac_grid_kwh_per_slot, plan_day_efc, planned_grid_charge_kwh
+from ems.planner.ev_load import estimate_ev_exogenous_kwh
 from ems.planner.load_profile import build_load_profile
 from ems.planner.validator import PlanValidation
 from ems.settings import effective_settings
@@ -164,6 +165,54 @@ def test_expected_ev_exogenous_honours_skip_today_setting():
     est = svc.expected_ev_exogenous(NOW)
     assert est.expected_kwh == 0.0
     assert est.source == "skipped_today"
+
+
+@pytest.mark.parametrize(
+    "skip_date",
+    [
+        None,
+        (NOW.astimezone(ZoneInfo("Europe/Amsterdam")).date() - timedelta(days=1)).isoformat(),
+        "not-a-date",
+    ],
+)
+def test_expected_ev_exogenous_inactive_skip_matches_estimator_without_skip(skip_date):
+    svc, _ = _service(_controlling_controller())
+    svc._settings["ev.day_hint"] = True
+    svc._settings["ev.charge_kwh"] = 30.0
+    svc._settings.pop("ev.skip_date", None)
+    if skip_date is not None:
+        svc._settings["ev.skip_date"] = skip_date
+
+    baseline = estimate_ev_exogenous_kwh(
+        now=NOW,
+        tz=svc._site_tz,
+        expected_day_kwh=None,
+        day_hint=True,
+        typical_charge_kwh=30.0,
+        schedule_raw=svc._settings.get("ev.schedule"),
+        daily_ev_rows=None,
+    )
+    actual = svc.expected_ev_exogenous(NOW)
+
+    assert baseline.expected_kwh > 0.0
+    assert (actual.expected_kwh, actual.source, actual.reason) == (
+        baseline.expected_kwh, baseline.source, baseline.reason,
+    )
+
+
+def test_expected_ev_exogenous_active_skip_reduces_positive_ev_load_to_zero():
+    svc, _ = _service(_controlling_controller())
+    svc._settings["ev.day_hint"] = True
+    svc._settings["ev.charge_kwh"] = 30.0
+    svc._settings.pop("ev.skip_date", None)
+    without_skip = svc.expected_ev_exogenous(NOW)
+
+    svc._settings["ev.skip_date"] = NOW.astimezone(svc._site_tz).date().isoformat()
+    with_skip = svc.expected_ev_exogenous(NOW)
+
+    assert without_skip.expected_kwh > 0.0
+    assert with_skip.expected_kwh == 0.0
+    assert with_skip.expected_kwh < without_skip.expected_kwh
 
 
 def test_adaptive_cfg_uses_effective_floor_when_device_above_reserve():
