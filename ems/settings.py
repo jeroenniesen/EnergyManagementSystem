@@ -902,7 +902,9 @@ SETTINGS_BY_KEY: dict[str, SettingsField] = {f.key: f for f in SETTINGS_SCHEMA}
 SECRET_KEYS: frozenset[str] = frozenset(f.key for f in SETTINGS_SCHEMA if f.type == "secret")
 
 # POST /api/setup/settings allowlist (#291 onboarding).
-SETUP_SETTINGS_EXTRA_KEYS: frozenset[str] = frozenset({"connection.use_live_devices"})
+SETUP_SETTINGS_EXTRA_KEYS: frozenset[str] = frozenset({
+    "connection.use_live_devices", "connection.use_live_prices",
+})
 SETUP_SETTINGS_PREFIXES: tuple[str, ...] = (
     "battery.", "meters.", "prices.", "site.", "ev.",
 )
@@ -916,20 +918,20 @@ SETUP_FORBIDDEN_KEY_MSG = (
     "Deze instelling kan niet via de setup-wizard worden gewijzigd."
 )
 
-# AC 17 (#291): battery power/reserve limits — never via onboarding (capability probe later).
+# Battery power and capacity limits remain outside onboarding.
 SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS: frozenset[str] = frozenset({
     "battery.max_charge_w",
     "battery.max_discharge_w",
     "battery.usable_kwh",
-    "battery.min_reserve_soc",
     "battery.night_reserve_kwh",
     "battery.overnight_load_kwh",
 })
-# Only connection fields — any other battery.* key is rejected (AC 17 guard against schema drift).
+# Only these battery fields may be set during onboarding.
 SETUP_SETTINGS_BATTERY_SAFE_KEYS: frozenset[str] = frozenset({
     "battery.indevolt_ip",
     "battery.indevolt_ips_extra",
     "battery.indevolt_port",
+    "battery.min_reserve_soc",
 })
 SETUP_SETTINGS_DENIED_KEYS: frozenset[str] = SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS
 

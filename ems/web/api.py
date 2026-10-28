@@ -2834,7 +2834,7 @@ def create_app(
                 battery_present=battery_present,
                 p1_paired=p1_paired,
                 soc_ready=soc_ready,
-                prices_live=_prices_live(),
+                prices_live=_prices_kind() == "live",
                 forecast_ok=_forecast_ok_for_quality(),
                 grid_fuse_unset=grid_fuse_unset,
             ).to_dict()
