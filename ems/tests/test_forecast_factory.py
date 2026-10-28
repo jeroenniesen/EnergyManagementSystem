@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -21,6 +23,49 @@ from ems.sources.solcast import SolcastSource
 from ems.storage.settings import SettingsStore
 
 AMS = ZoneInfo("Europe/Amsterdam")
+
+# Hermetic anchor (adapter conformance); day_offset exercises clocks up to +30 days.
+_CLOCK_ANCHOR_UTC = datetime(2026, 7, 29, 10, 0, tzinfo=UTC)
+
+
+def _inject_solar_forecast_clock(
+    monkeypatch: pytest.MonkeyPatch,
+    clock: Callable[[], datetime],
+) -> None:
+    """Sources default to module ``_utcnow`` at class definition — inject before factory builds."""
+    for cls in (SolcastSource, ForecastSolarSource, MockSolarForecastSource):
+        original = cls.__init__
+
+        def _patched_init(self, *args, _orig=original, **kwargs):
+            kwargs.setdefault("clock", clock)
+            _orig(self, *args, **kwargs)
+
+        monkeypatch.setattr(cls, "__init__", _patched_init)
+
+
+def _forecast_solar_watts_payload(frozen_utc: datetime) -> dict:
+    local_noon = frozen_utc.astimezone(AMS).replace(
+        hour=12, minute=0, second=0, microsecond=0,
+    )
+    ts = local_noon.strftime("%Y-%m-%d %H:%M:%S")
+    return {"result": {"watts": {ts: 1000}}}
+
+
+def _solcast_ok_payload(frozen_utc: datetime) -> dict:
+    period_end = (
+        frozen_utc.astimezone(AMS)
+        .replace(hour=12, minute=30, second=0, microsecond=0)
+        .astimezone(UTC)
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+    return {"forecasts": [{
+        "period_end": period_end,
+        "period": "PT30M",
+        "pv_estimate": 1.0,
+        "pv_estimate10": 0.2,
+        "pv_estimate90": 1.2,
+    }]}
+
 
 _LIVE = {
     "connection.use_live_devices": True,
@@ -162,8 +207,20 @@ def test_unchosen_forecast_builder_stays_lazy(monkeypatch):
     assert calls == []
 
 
-def test_solcast_fallback_on_failure_stays_p50_and_real_solcast_stamps_p10():
+@pytest.mark.parametrize("day_offset", [0, 2, 30])
+def test_solcast_fallback_on_failure_stays_p50_and_real_solcast_stamps_p10(
+    monkeypatch: pytest.MonkeyPatch, day_offset: int,
+):
     """#330: real P10 is stamped only for the source that delivered. Fallback stays P50."""
+    frozen_utc = _CLOCK_ANCHOR_UTC + timedelta(days=day_offset)
+
+    def clock() -> datetime:
+        return frozen_utc
+
+    _inject_solar_forecast_clock(monkeypatch, clock)
+    watts = _forecast_solar_watts_payload(frozen_utc)
+    solcast_ok_body = _solcast_ok_payload(frozen_utc)
+
     solcast = get_metadata(FORECAST_DOMAIN, "solcast")
     forecast_solar = get_metadata(FORECAST_DOMAIN, "forecast_solar")
     mock = get_metadata(FORECAST_DOMAIN, "mock")
@@ -173,8 +230,6 @@ def test_solcast_fallback_on_failure_stays_p50_and_real_solcast_stamps_p10():
     assert forecast_solar is not None and "p10" not in forecast_solar.capabilities
     assert mock is not None and "synthetic" in mock.capabilities
     assert delivered_source_has_real_p10(None) is False
-
-    watts = {"result": {"watts": {"2026-10-24 12:00:00": 1000}}}
 
     def forecast_solar_http(url):
         return watts
@@ -202,13 +257,7 @@ def test_solcast_fallback_on_failure_stays_p50_and_real_solcast_stamps_p10():
     assert any(slot.p10_w < slot.p50_w for slot in fallback_slots)
 
     def solcast_ok(url, headers):
-        return {"forecasts": [{
-            "period_end": "2026-10-24T12:30:00Z",
-            "period": "PT30M",
-            "pv_estimate": 1.0,
-            "pv_estimate10": 0.2,
-            "pv_estimate90": 1.2,
-        }]}
+        return solcast_ok_body
 
     delivered = build_solar_forecast(
         live, AMS, use_live=True,
