@@ -33,6 +33,19 @@ def test_defaults_cover_every_field():
     assert d["control.allow_export_discharge"] is False
 
 
+def test_load_profile_resolution_setting():
+    key = "planner.load_profile_resolution"
+    field = SETTINGS_BY_KEY[key]
+    assert field.type == "enum" and field.options == ("hour", "quarter")
+    assert field.advanced is True
+    assert defaults()[key] == "hour"
+    for value in ("hour", "quarter"):
+        clean, errors = validate_settings({key: value})
+        assert errors == {} and clean[key] == value
+    _clean, errors = validate_settings({key: "minute"})
+    assert key in errors
+
+
 def test_export_model_confirmed_defaults_and_validation():
     """#341 / F-11: flag defaults false, bool-only, hidden from Manage; reads do not confirm."""
     d = defaults()

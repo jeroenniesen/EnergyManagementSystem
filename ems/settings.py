@@ -438,6 +438,12 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         advanced=True,
     ),
     SettingsField(
+        "planner.load_profile_resolution", "Load profile resolution", "enum", "hour", "planner",
+        help="Use quarter-hour load patterns when at least six samples exist for the slot; "
+        "otherwise use the hourly estimate.",
+        options=("hour", "quarter"), advanced=True,
+    ),
+    SettingsField(
         "planner.solar_confidence", "Solar forecast confidence", "number", 80.0, "planner",
         help="How much of the expected solar forecast to count on when deciding the grid top-up. "
         "Higher = trust the forecast and buy less grid power; lower = more cautious (buys more to "
