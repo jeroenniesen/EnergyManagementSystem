@@ -14,6 +14,17 @@ from ems.settings import (
 )
 
 
+def test_minimum_reserve_schema_bounds_and_default():
+    field = SETTINGS_BY_KEY["battery.min_reserve_soc"]
+    shown = next(f for f in schema_json() if f["key"] == field.key)
+    assert shown["min"] == field.min
+    assert shown["max"] == field.max
+    assert shown["step"] == field.step
+    assert shown["unit"] == field.unit
+    assert shown["default"] == field.default
+    assert field.min <= field.default <= field.max
+
+
 def test_defaults_cover_every_field():
     d = defaults()
     assert set(d) == set(SETTINGS_BY_KEY)
