@@ -2,7 +2,7 @@
 
 No new money math. Decides which completed local days are due (last 7 only),
 whether a day is still provisional, and which of those days are past noon
-without a rollup. The maintenance loop and the finance/energy responses call
+without a rollup. The scheduled rollup loop and finance/energy responses call
 these helpers. Older history stays on the existing backfill tool.
 """
 from __future__ import annotations
@@ -23,6 +23,8 @@ _log = logging.getLogger(__name__)
 LOOKBACK_DAYS = 7
 PROVISIONAL_MIN_COVERAGE = 0.95
 DEADLINE_HOUR = 12
+ROLLUP_HOUR = 0
+ROLLUP_MINUTE = 10
 
 EnsureFinance = Callable[[date], Awaitable[object]]
 
@@ -55,6 +57,23 @@ def past_rollup_deadline(now_local: datetime, day: date) -> bool:
         day.year, day.month, day.day, DEADLINE_HOUR, tzinfo=now_local.tzinfo,
     ) + timedelta(days=1)
     return now_local >= deadline
+
+
+def seconds_until_next_rollup(now_local: datetime) -> float:
+    """Elapsed seconds to the next 00:10 in the site's local timezone.
+
+    Convert both instants to UTC before subtraction: local days around a DST
+    transition are 23 or 25 hours long, not always 24 hours.
+    """
+    if now_local.tzinfo is None:
+        raise ValueError("now_local must be timezone-aware")
+    target = datetime(
+        now_local.year, now_local.month, now_local.day,
+        ROLLUP_HOUR, ROLLUP_MINUTE, tzinfo=now_local.tzinfo,
+    )
+    if now_local >= target:
+        target += timedelta(days=1)
+    return (target.astimezone(UTC) - now_local.astimezone(UTC)).total_seconds()
 
 
 def day_is_provisional(*, has_rollup: bool, sample_coverage: float | None) -> bool:

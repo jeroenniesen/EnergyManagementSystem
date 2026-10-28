@@ -156,6 +156,7 @@ from ems.rollups import (
     catch_up_rollups,
     day_is_provisional,
     missing_rollup_days,
+    seconds_until_next_rollup,
 )
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
@@ -225,6 +226,15 @@ from ems.web.routes.whatif import build_router as build_whatif_router
 
 _log = logging.getLogger("ems.recorder")
 _audit_log = logging.getLogger("ems.web.audit")
+
+
+async def _wait_for_rollup_tick(stop: asyncio.Event, seconds: float) -> bool:
+    """Return whether shutdown was requested before the next local rollup time."""
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=seconds)
+        return True
+    except TimeoutError:
+        return False
 
 
 def _task_died(name: str):
@@ -1518,14 +1528,6 @@ def create_app(
                         _log.info("history retention: purged %d rows older than %d days",
                                   deleted, history_retention_days)
                 await store.maintain()
-                # F-48 / #342: idempotent catch-up of the last 7 completed local days (not older).
-                # Yesterday is refreshed when samples remain; a stored rollup is never replaced
-                # with empty data. Finance still goes through `_ensure_day_finance` (#131 + F5).
-                now_local = _now_utc().astimezone(site_tz)
-                await catch_up_rollups(
-                    store, now_local, cadence_seconds=_sample_cadence_seconds(),
-                    ensure_finance=_ensure_day_finance,
-                )
                 obs_cutoff = (_now_utc()
                               - timedelta(days=OBSERVATION_RETENTION_DAYS)).isoformat()
                 purged = await store.purge_observations_older_than(obs_cutoff)
@@ -1547,6 +1549,22 @@ def create_app(
             # retention/WAL work above, nor vice-versa. Runs after maintain() so it snapshots the
             # freshly-checkpointed DB.
             await _run_backup(store, store.db_path, history_backup_keep, _backup_state, notifier)
+
+    async def _rollup_loop(stop: asyncio.Event) -> None:
+        """Catch up at boot and at 00:10 site time, independently of maintenance."""
+        while not stop.is_set():
+            try:
+                await catch_up_rollups(
+                    store, _now_utc().astimezone(site_tz),
+                    cadence_seconds=_sample_cadence_seconds(),
+                    ensure_finance=_ensure_day_finance,
+                )
+            except Exception as exc:
+                _log.warning("rollup catch-up failed (%s: %s); retrying at next local 00:10",
+                             type(exc).__name__, exc)
+            seconds = seconds_until_next_rollup(_now_utc().astimezone(site_tz))
+            if await _wait_for_rollup_tick(stop, seconds):
+                return
 
     async def _shutdown_restore() -> None:
         """Graceful-shutdown safety (SPEC §6.5 / runbook): in operational mode, hand the battery
@@ -1716,9 +1734,12 @@ def create_app(
         validate_task.add_done_callback(_task_died("AI validation"))
         # Daily history retention + DB maintenance (bounded storage for a 24/7 install).
         maintenance_task = None
+        rollup_task = None
         if store is not None:
             maintenance_task = asyncio.create_task(_maintenance_loop(stop))
             maintenance_task.add_done_callback(_task_died("History maintenance"))
+            rollup_task = asyncio.create_task(_rollup_loop(stop))
+            rollup_task.add_done_callback(_task_died("Rollup catch-up"))
         # Forecast-driven notifications (B-75): its OWN loop, independent of dry_run/controller —
         # see _run_detector_cycle's docstring for why it doesn't piggyback on the control loop.
         notify_task = None
@@ -1741,7 +1762,8 @@ def create_app(
             # graceful stop (upgrade, reboot, launchd restart) must not leave it in a forced
             # charge/hold/discharge. Bounded + best-effort: never block shutdown on the device.
             await _shutdown_restore()
-            for t in (task, control_task, audit_task, validate_task, maintenance_task, notify_task):
+            for t in (task, control_task, audit_task, validate_task, maintenance_task,
+                      rollup_task, notify_task):
                 if t is not None:
                     await t
             # RSS sampler (B-80): the only free-standing background task not driven by the shared

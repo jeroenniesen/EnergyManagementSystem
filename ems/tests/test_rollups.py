@@ -10,10 +10,11 @@ import sqlite3
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from ems.clock import FrozenClock
+from ems.clock import Clock, FrozenClock
 from ems.domain import RawSample
 from ems.load_model import reconstruct
 from ems.rollups import (
@@ -21,6 +22,7 @@ from ems.rollups import (
     day_is_provisional,
     missing_rollup_days,
     past_rollup_deadline,
+    seconds_until_next_rollup,
 )
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
@@ -281,3 +283,157 @@ def test_rollup_missing_alert_clears_on_the_api_when_the_rollup_exists(tmp_path,
         assert "rollup_missing" not in alerts
         assert client.get("/api/diagnostics").json()["rollup_missing_count"] == 0
         assert missing_rollup_days(db, when) == []
+
+
+class _AdvancingClock(Clock):
+    def __init__(self, instant: datetime) -> None:
+        self.instant = instant.astimezone(UTC)
+
+    def now_utc(self) -> datetime:
+        return self.instant
+
+    def set_local(self, instant: datetime) -> None:
+        self.instant = instant.astimezone(UTC)
+
+
+@pytest.mark.parametrize(
+    ("day", "boot_day", "expected_dst_hours"),
+    [
+        (date(2026, 6, 28), date(2026, 6, 28), None),
+        (date(2026, 3, 29), date(2026, 3, 28), 23),
+        (date(2026, 10, 25), date(2026, 10, 24), 25),
+    ],
+)
+def test_rollup_runs_at_local_0010_before_noon_after_afternoon_boot(
+    tmp_path, monkeypatch, day, boot_day, expected_dst_hours,
+):
+    """Real catch-up follows local midnight, including 23/25-hour DST days."""
+    db = str(tmp_path / "ems.sqlite")
+    store = HistoryStore(db)
+    clock = _AdvancingClock(datetime.combine(boot_day, datetime.min.time(), AMS).replace(hour=14))
+
+    async def scenario() -> None:
+        await store.init()
+        await _record(store, day)
+        ticks: asyncio.Queue[float] = asyncio.Queue()
+        releases: asyncio.Queue[None] = asyncio.Queue()
+
+        async def controlled_wait(stop: asyncio.Event, seconds: float) -> bool:
+            ticks.put_nowait(seconds)
+            stopped = asyncio.create_task(stop.wait())
+            released = asyncio.create_task(releases.get())
+            done, pending = await asyncio.wait(
+                {stopped, released}, return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            return stopped in done
+
+        monkeypatch.setattr("ems.web.api._wait_for_rollup_tick", controlled_wait)
+        app = create_app(
+            MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
+            store=store, settings_store=SettingsStore(db),
+            price_source=MockPriceSource(AMS), clock=clock,
+            history_purge_enabled=False, history_backup_keep=0,
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                         base_url="http://test") as client:
+                delay = await asyncio.wait_for(ticks.get(), timeout=10)
+                assert delay == 10 * 3600 + 10 * 60
+                assert not await store.daily_energy_between(day.isoformat(),
+                                                              (day + timedelta(days=1)).isoformat())
+                if expected_dst_hours is not None:
+                    clock.set_local(datetime.combine(day, datetime.min.time(), AMS).replace(
+                        minute=10,
+                    ))
+                    releases.put_nowait(None)
+                    delay = await asyncio.wait_for(ticks.get(), timeout=10)
+                    assert delay == expected_dst_hours * 3600
+                next_day = day + timedelta(days=1)
+                clock.set_local(datetime.combine(next_day, datetime.min.time(), AMS).replace(
+                    minute=10,
+                ))
+                releases.put_nowait(None)
+                await asyncio.wait_for(ticks.get(), timeout=10)
+                energy = await store.daily_energy_between(day.isoformat(), next_day.isoformat())
+                finance = await store.daily_finance_between(day.isoformat(), next_day.isoformat())
+                assert len(energy) == len(finance) == 1
+                clock.set_local(datetime.combine(next_day, datetime.min.time(), AMS).replace(
+                    hour=12,
+                ))
+                alerts = {a["key"] for a in (await client.get("/api/alerts")).json()["alerts"]}
+                assert "rollup_missing" not in alerts
+                assert (await client.get("/api/diagnostics")).json()["rollup_missing_count"] == 0
+                clock.set_local(datetime.combine(next_day, datetime.min.time(), AMS).replace(
+                    hour=13,
+                ))
+                assert "rollup_missing" not in {
+                    a["key"] for a in (await client.get("/api/alerts")).json()["alerts"]
+                }
+
+    asyncio.run(scenario())
+
+
+def test_failed_scheduled_rollup_is_alerted_after_deadline(tmp_path, monkeypatch):
+    """A genuine job failure remains visible through the API after local noon."""
+    db = str(tmp_path / "ems.sqlite")
+    store = HistoryStore(db)
+    day = date(2026, 6, 28)
+    clock = _AdvancingClock(datetime(2026, 6, 28, 14, tzinfo=AMS))
+
+    async def fail_energy(*_args, **_kwargs):
+        raise RuntimeError("rollup unavailable")
+
+    monkeypatch.setattr("ems.rollups.materialize_daily_energy", fail_energy)
+
+    async def scenario() -> None:
+        await store.init()
+        await _record(store, day)
+        ticks: asyncio.Queue[float] = asyncio.Queue()
+        resume = asyncio.Event()
+
+        async def controlled_wait(stop: asyncio.Event, seconds: float) -> bool:
+            ticks.put_nowait(seconds)
+            stopped = asyncio.create_task(stop.wait())
+            released = asyncio.create_task(resume.wait())
+            done, pending = await asyncio.wait(
+                {stopped, released}, return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            resume.clear()
+            return stopped in done
+
+        monkeypatch.setattr("ems.web.api._wait_for_rollup_tick", controlled_wait)
+        app = create_app(
+            MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
+            store=store, settings_store=SettingsStore(db),
+            price_source=MockPriceSource(AMS), clock=clock,
+            history_purge_enabled=False, history_backup_keep=0,
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                         base_url="http://test") as client:
+                assert await asyncio.wait_for(ticks.get(), timeout=10) == 10 * 3600 + 10 * 60
+                clock.set_local(datetime(2026, 6, 29, 0, 10, tzinfo=AMS))
+                resume.set()
+                await asyncio.wait_for(ticks.get(), timeout=10)
+                assert not await store.daily_energy_between(day.isoformat(), "2026-06-29")
+                assert "rollup_missing" not in {
+                    a["key"] for a in (await client.get("/api/alerts")).json()["alerts"]
+                }
+                clock.set_local(datetime(2026, 6, 29, 12, tzinfo=AMS))
+                assert "rollup_missing" in {
+                    a["key"] for a in (await client.get("/api/alerts")).json()["alerts"]
+                }
+                assert (await client.get("/api/diagnostics")).json()["rollup_missing_count"] == 1
+
+    asyncio.run(scenario())
+
+
+def test_next_rollup_delay_accounts_for_dst():
+    assert seconds_until_next_rollup(datetime(2026, 3, 29, 0, 10, tzinfo=AMS)) == 23 * 3600
+    assert seconds_until_next_rollup(datetime(2026, 10, 25, 0, 10, tzinfo=AMS)) == 25 * 3600
