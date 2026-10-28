@@ -68,6 +68,7 @@ import { homeSummary } from "./scoreCopy";
 import { SkyBackdrop } from "./SkyBackdrop";
 import { Advanced } from "./Advanced";
 import { Setup } from "./Setup";
+import { parseAppHash, serialiseAppHash } from "./settingsRoute";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
 
 type Status = {
@@ -103,6 +104,7 @@ type Decision = {
   home_state?: { headline: string; tone: string; simulated: boolean };
   decision_reason?: import("./decisionWhy").DecisionReason;
   buy_pool?: import("./planStoryModel").BuyPool | null;
+  solar_basis?: string | null;
 };
 
 type ChargeNeed = {
@@ -173,33 +175,26 @@ function todayStr(): string {
 }
 // Alert hierarchy: control-blocking (critical) above degraded (warning) above info (energy review).
 const SEVERITY_RANK: Record<string, number> = { critical: 3, warning: 2, info: 1 };
-const VIEWS: ViewName[] = ["dashboard", "insights", "car", "chat", "trading", "setup", "manage"];
-const MANAGE_TABS: ManageTab[] = ["settings", "system", "audit"];
 // B-68 + B-98: plain-language confidence chip (Dutch-first Home).
 const CONFIDENCE_CHIP_LABEL: Record<PlanConfidence["level"], string> = HOME_CONFIDENCE_CHIP;
 
 // Hash → route. Canonical hashes: #dashboard #insights #car #chat #trading #manage #manage/system
-// #manage/audit. LEGACY hashes still work so old bookmarks / deep-links don't break: bare
-// #settings|#system|#audit redirect to the matching Manage sub-tab. Anything unknown falls back to
-// the dashboard (loop-2's finding — a mistyped hash must never blank the app).
+// #manage/audit #manage/settings/<section>. LEGACY hashes still work so old bookmarks don't break:
+// bare #settings|#system|#audit redirect to the matching Manage sub-tab. Anything unknown falls
+// back to the dashboard (a mistyped hash must never blank the app). The section id itself is
+// parsed by settingsSectionFromHash — routeFromHash stays {view, tab} so existing callers keep
+// their exact shape.
 export function routeFromHash(hash: string): Route {
-  const raw = hash.replace(/^#\/?/, "");
-  // Legacy top-level Settings/System/Audit → the Manage sub-tab they became.
-  if (raw === "settings") return { view: "manage", tab: "settings" };
-  if (raw === "system") return { view: "manage", tab: "system" };
-  if (raw === "audit") return { view: "manage", tab: "audit" };
-  // Manage + its sub-tabs. Bare #manage (and #manage/settings) open the Settings tab.
-  if (raw === "setup") return { view: "setup", tab: "settings" };
-  if (raw === "manage") return { view: "manage", tab: "settings" };
-  const m = raw.match(/^manage\/(.+)$/);
-  if (m) {
-    const tab = m[1] as ManageTab;
-    return { view: "manage", tab: MANAGE_TABS.includes(tab) ? tab : "settings" };
-  }
-  return {
-    view: VIEWS.includes(raw as ViewName) ? (raw as ViewName) : "dashboard",
-    tab: "settings",
-  };
+  const parsed = parseAppHash(hash);
+  return { view: parsed.view, tab: parsed.tab };
+}
+
+// Settings section carried in #manage/settings/<id>. Undefined for bare #manage and for every
+// other view. Unknown ids are returned raw; Settings resolves them to the first section.
+function settingsSectionFromHash(hash: string): string | undefined {
+  const parsed = parseAppHash(hash);
+  if (parsed.view !== "manage" || parsed.tab !== "settings") return undefined;
+  return parsed.settingsSection;
 }
 
 function fmtW(w: number): string {
@@ -449,11 +444,13 @@ export function App() {
   const [route, setRoute] = useState<Route>(() => routeFromHash(window.location.hash));
   const view = route.view;
   const manageTab = route.tab;
-  // Which Settings section a deep-link asked to open (System's "solar" health action → "planner",
-  // Car's "Manage → Settings → Car" → "ev") — runtime state only, never part of the hash (the
-  // canonical hash stays #manage/settings; CLAUDE.md: keep it simple). Reset whenever navigate()
-  // is called without one, so a plain nav click never leaves a stale section behind.
-  const [settingsSection, setSettingsSection] = useState<string | undefined>(undefined);
+  // Which Settings section the hash asked to open (#manage/settings/<id>). Seeded from the URL so
+  // a reload or a copied link opens that section. Reset whenever navigate() is called without one,
+  // so a plain nav click never leaves a stale section behind. The hashchange listener keeps this
+  // in step with back/forward.
+  const [settingsSection, setSettingsSection] = useState<string | undefined>(() =>
+    settingsSectionFromHash(window.location.hash),
+  );
   const [homeMoreOpen, setHomeMoreOpen] = useState<boolean>(() => {
     try {
       return localStorage.getItem("ems.dash.homeMoreOpen") === "1";
@@ -493,9 +490,18 @@ export function App() {
     };
   }, []);
   useEffect(() => {
-    const onHash = () => setRoute(routeFromHash(window.location.hash));
+    const onHash = () => {
+      setRoute(routeFromHash(window.location.hash));
+      setSettingsSection(settingsSectionFromHash(window.location.hash));
+    };
+    // hashchange covers location.hash writes; popstate covers browser back/forward when the
+    // traversal only updates the session history entry.
     window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
+    window.addEventListener("popstate", onHash);
+    return () => {
+      window.removeEventListener("hashchange", onHash);
+      window.removeEventListener("popstate", onHash);
+    };
   }, []);
   // Keep <html data-theme> in sync and cache the choice for the next load's first paint.
   useEffect(() => {
@@ -538,20 +544,19 @@ export function App() {
     }
   }
 
-  // Navigate to a view (and, for "manage", a sub-tab). Writes the canonical hash so the URL always
-  // round-trips (bookmarks, back/forward); the hashchange listener also fires and re-derives the
-  // route, but setting state here too keeps the switch instant. `tab` defaults to "settings" so a
-  // bare `navigate("manage")` opens the Settings sub-tab, matching #manage. `section` is a Settings
-  // deep-link (e.g. "planner", "ev") — runtime-only, never encoded in the hash; omitting it resets
-  // any section a previous deep-link left pending.
+  // Navigate to a view (and, for "manage", a sub-tab). Assigning location.hash pushes a history
+  // entry when the hash changes, so back/forward round-trips. The hashchange listener re-derives
+  // the route; setting state here too keeps the switch instant. `tab` defaults to "settings" so a
+  // bare `navigate("manage")` opens the Settings sub-tab and the hash stays #manage. `section`
+  // deep-links a Settings section (`#manage/settings/<id>`, e.g. "planner", "ev"); omitting it
+  // clears any section a previous deep-link left pending.
   function navigate(next: ViewName, tab: ManageTab = "settings", section?: string) {
-    const hash =
-      next === "manage" && tab !== "settings" ? `manage/${tab}` : next;
+    const hash = serialiseAppHash(next, next === "manage" ? tab : "settings", section);
     if (window.location.hash.replace(/^#\/?/, "") !== hash) {
       window.location.hash = hash;
     }
     setRoute({ view: next, tab: next === "manage" ? tab : route.tab });
-    setSettingsSection(section);
+    setSettingsSection(next === "manage" && tab === "settings" ? section : undefined);
   }
 
   useEffect(() => {
@@ -680,6 +685,77 @@ export function App() {
     }
     poll();
     const id = setInterval(poll, POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [view]);
+
+  // B-09 / #369 NAV-03: same /api/dashboard → /api/status liveness check on non-dashboard views
+  // so the unreachable banner is not dashboard-only. Dashboard keeps the full poll above unchanged.
+  useEffect(() => {
+    if (view === "dashboard") return;
+    let alive = true;
+    async function getJson(url: string) {
+      const r = await apiFetch(url);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    }
+    function touchReachability() {
+      const applyCore = (value: {
+        status: Status;
+        freshness: FreshnessMap;
+        alerts: AlertsResp;
+        device_health?: DeviceHealth | null;
+      }) => {
+        unreachableRef.current = false;
+        setStatus(value.status);
+        setFreshness(value.freshness);
+        batteryFreshness.current = value.freshness.battery ?? null;
+        setAlertsData(value.alerts);
+        if (value.device_health) setDeviceHealth(value.device_health);
+        setError(null);
+        setLastReachableAt(Date.now());
+        setTileFreshness((current) => ({
+          ...current,
+          status: { updatedAt: Date.now(), stale: batteryFreshness.current === "stale" },
+        }));
+        if (value.freshness.battery === "stale" || value.freshness.battery === "missing") {
+          setTileFreshness((current) => ({ ...current, status: { ...current.status, stale: true } }));
+        }
+      };
+      getJson("/api/dashboard")
+        .then((value: {
+          status: Status;
+          freshness: FreshnessMap;
+          alerts: AlertsResp;
+          device_health?: DeviceHealth | null;
+        }) => {
+          if (!alive) return;
+          applyCore(value);
+        })
+        .catch(() => {
+          getJson("/api/status")
+            .then((v) => {
+              if (!alive) return;
+              unreachableRef.current = false;
+              setStatus(v);
+              setError(null);
+              setLastReachableAt(Date.now());
+            })
+            .catch((e) => {
+              if (!alive) return;
+              unreachableRef.current = true;
+              setError(String(e ?? "unreachable"));
+              setStatus(null);
+              setAlertsData(null);
+              setDecision(null);
+              setTileFreshness((current) => ({ ...current, status: { ...current.status, stale: true } }));
+            });
+        });
+    }
+    touchReachability();
+    const id = setInterval(touchReachability, POLL_MS);
     return () => {
       alive = false;
       clearInterval(id);
@@ -967,7 +1043,7 @@ export function App() {
 
       {/* B-09 / #73: unreachable EMS uses the same alert-item anatomy (message + failsafe +
           Laatst bekend) — never a bare "Cannot reach EMS API: …" error code. */}
-      {view === "dashboard" && error && (
+      {error && (
         <section className="alerts" data-testid="error">
           <div
             className="alert-item alert-critical"
@@ -1147,6 +1223,7 @@ export function App() {
               ?? batteryPlan?.reason?.buy_pool
               ?? null
             }
+            solarBasis={decision?.solar_basis ?? null}
           />
           {/* B-33 / #85: waarom voor batterij-acties + pauze/reserve (slice 1–2) — één tik, niet
               standaard open. Tekst uit battery-plan `reason` (#84), dry-run zegt "zou". */}

@@ -5,6 +5,8 @@ import {
   actionWindows,
   buildPlanStoryModel,
   canonicalAction,
+  clipPlanStoryHorizon,
+  PLAN_STORY_HORIZON_MS,
   createTimeScale,
   describeCombinedPlan,
   findSlotAtTime,
@@ -427,5 +429,31 @@ describe("why not buy (#315)", () => {
     });
     expect(line).toContain("Volgende kans 07:30");
     expect(line).not.toContain("Geen koopmoment in de prijzen van vandaag/morgen");
+  });
+});
+
+describe("48h horizon chart", () => {
+  test("shows at most 48h and keeps axis ticks from colliding", () => {
+    const planned = Array.from({ length: 200 }, (_, index) => storySlot(index * 15));
+    const story = storyData([], planned, 0);
+    const normalised = normaliseSlots([], planned);
+    const clipped = clipPlanStoryHorizon(normalised, Date.parse(story.now));
+    expect(clipped).toHaveLength(192);
+    expect(clipped[clipped.length - 1].startMs - clipped[0].startMs).toBeLessThan(
+      PLAN_STORY_HORIZON_MS,
+    );
+
+    const model = buildPlanStoryModel(story, 58, 880)!;
+    expect(model.slots).toHaveLength(192);
+    expect(model.scale.t1 - model.scale.t0).toBeLessThanOrEqual(PLAN_STORY_HORIZON_MS);
+    expect(model.ticks.length).toBeGreaterThan(1);
+    expect(model.ticks.length).toBeLessThanOrEqual(8);
+    const gap = model.ticks[1] - model.ticks[0];
+    expect(gap).toBeGreaterThanOrEqual(8 * 60 * 60 * 1000);
+    for (const tick of model.ticks) {
+      const x = model.scale.x(tick);
+      expect(x).toBeGreaterThanOrEqual(model.scale.x(model.scale.t0));
+      expect(x).toBeLessThanOrEqual(model.scale.x(model.scale.t1));
+    }
   });
 });

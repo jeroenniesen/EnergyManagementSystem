@@ -5,6 +5,7 @@ import { useRef } from "react";
 import { Icon, type IconName } from "./icons";
 import { batteryFloorFields, type Battery } from "./BatteryChips";
 import { HOME_BATTERY_FLOOR, isBelowReserveSoc } from "./labels";
+import { seasonHoldActions, type StrategyHysteresis } from "./seasonHold";
 
 export type Strategy = {
   mode: string; // auto | summer | winter (the user's choice)
@@ -14,6 +15,7 @@ export type Strategy = {
   reason?: string;
   grid_topup: boolean;
   max_topup_price: number;
+  hysteresis?: StrategyHysteresis | null;
 };
 
 const OPTIONS: { key: string; label: string; icon: IconName }[] = [
@@ -50,6 +52,7 @@ export function StrategyCard({
     floor != null && isBelowReserveSoc(currentSocPct, floor.reserve);
 
   const idx = Math.max(0, OPTIONS.findIndex((o) => o.key === strategy.mode));
+  const hold = seasonHoldActions(strategy.mode, strategy.hysteresis);
   // Arrow keys move through the segmented control like a native radio group.
   function onKeyDown(e: React.KeyboardEvent) {
     if (!canOperate) return;
@@ -112,6 +115,46 @@ export function StrategyCard({
         <p className="strategy-why" data-testid="strategy-why">
           {strategy.reason}
         </p>
+      )}
+      {(hold.holdLabel || hold.backToAuto) && (
+        <div className="strategy-hold" role="group" aria-label="Seizoenswissel">
+          {hold.holdLabel && (
+            <span
+              id="strategy-hold-chip"
+              className="strategy-hold-chip"
+              role="status"
+              aria-live="polite"
+              data-testid="strategy-hold-chip"
+            >
+              {hold.holdLabel}
+            </span>
+          )}
+          <div className="strategy-hold-actions">
+            {hold.forceSummer && (
+              <button
+                type="button"
+                className="btn-primary strategy-hold-btn"
+                data-testid="strategy-force-summer"
+                aria-describedby="strategy-hold-chip"
+                disabled={!canOperate}
+                onClick={() => onChange("summer")}
+              >
+                Nu solar-first
+              </button>
+            )}
+            {hold.backToAuto && (
+              <button
+                type="button"
+                className="btn-ghost strategy-hold-btn"
+                data-testid="strategy-back-auto"
+                disabled={!canOperate}
+                onClick={() => onChange("auto")}
+              >
+                Terug naar Auto
+              </button>
+            )}
+          </div>
+        </div>
       )}
 
       <div className="strategy-tune">

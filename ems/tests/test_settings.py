@@ -14,12 +14,36 @@ from ems.settings import (
 )
 
 
+def test_minimum_reserve_schema_bounds_and_default():
+    field = SETTINGS_BY_KEY["battery.min_reserve_soc"]
+    shown = next(f for f in schema_json() if f["key"] == field.key)
+    assert shown["min"] == field.min
+    assert shown["max"] == field.max
+    assert shown["step"] == field.step
+    assert shown["unit"] == field.unit
+    assert shown["default"] == field.default
+    assert field.min <= field.default <= field.max
+
+
 def test_defaults_cover_every_field():
     d = defaults()
     assert set(d) == set(SETTINGS_BY_KEY)
     assert d["planner.round_trip_efficiency"] == 0.90
     assert d["ui.theme"] == "auto"
     assert d["control.allow_export_discharge"] is False
+
+
+def test_load_profile_resolution_setting():
+    key = "planner.load_profile_resolution"
+    field = SETTINGS_BY_KEY[key]
+    assert field.type == "enum" and field.options == ("hour", "quarter")
+    assert field.advanced is True
+    assert defaults()[key] == "hour"
+    for value in ("hour", "quarter"):
+        clean, errors = validate_settings({key: value})
+        assert errors == {} and clean[key] == value
+    _clean, errors = validate_settings({key: "minute"})
+    assert key in errors
 
 
 def test_export_model_confirmed_defaults_and_validation():
@@ -49,6 +73,20 @@ def test_export_model_confirmed_defaults_and_validation():
     assert stored["prices.export_model_confirmed"] is False
     legacy = effective_settings({"prices.export_price_model": "spot_minus_tax"})
     assert legacy["prices.export_model_confirmed"] is False
+
+
+def test_stale_reserve_buffer_pp_defaults_and_bounds():
+    d = defaults()
+    assert d["planner.stale_reserve_buffer_pp"] == 5.0
+    field = SETTINGS_BY_KEY["planner.stale_reserve_buffer_pp"]
+    assert field.advanced is True
+    assert field.min == 0.0 and field.max == 20.0
+    clean, errors = validate_settings({"planner.stale_reserve_buffer_pp": 20.0})
+    assert errors == {} and clean["planner.stale_reserve_buffer_pp"] == 20.0
+    _c, err = validate_settings({"planner.stale_reserve_buffer_pp": 21.0})
+    assert "planner.stale_reserve_buffer_pp" in err
+    _c, err_neg = validate_settings({"planner.stale_reserve_buffer_pp": -1.0})
+    assert "planner.stale_reserve_buffer_pp" in err_neg
 
 
 def test_trading_settings_defaults_match_e11_lock():
@@ -497,6 +535,25 @@ def test_heating_done_field_accepts_arbitrary_json_string():
     assert json.loads(clean["heating.done"]) == {
         "balancing": "2026-07-15", "flow_temp": "2026-07-16",
     }
+
+
+def test_max_buy_eur_per_kwh_bounds_and_strategy_group():
+    """AC3 (#324): planner.max_buy_eur_per_kwh — bounds and visible in Strategy (not advanced)."""
+    field = SETTINGS_BY_KEY["planner.max_buy_eur_per_kwh"]
+    assert field.type == "number"
+    assert field.group == "strategy"
+    assert field.unit == "€/kWh"
+    assert field.advanced is False
+    assert field.min <= field.default <= field.max
+    assert field.default == 0.0 and field.min == 0.0 and field.max == 1.0
+    _low, err_low = validate_settings({"planner.max_buy_eur_per_kwh": -0.01})
+    _high, err_high = validate_settings({"planner.max_buy_eur_per_kwh": 1.01})
+    assert "planner.max_buy_eur_per_kwh" in err_low
+    assert "planner.max_buy_eur_per_kwh" in err_high
+    clean, errors = validate_settings({"planner.max_buy_eur_per_kwh": 0.20})
+    assert errors == {} and clean["planner.max_buy_eur_per_kwh"] == 0.20
+    row = next(r for r in schema_json() if r["key"] == field.key)
+    assert row["advanced"] is False and row["group"] == "strategy"
 
 
 def test_max_daily_grid_charge_bounds_and_slider():

@@ -12,6 +12,7 @@ from ems.freshness import FreshnessTracker
 from ems.sense import SIGNALS
 from ems.setup_checklist import build_setup_checklist
 from ems.sources.battery import MockBatteryDriver
+from ems.sources.fixed_tariff import FixedTariffPriceSource
 from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
@@ -152,12 +153,59 @@ def test_setup_checklist_wired_app_mock_prices(tmp_path):
     assert prices["status"] == "Ontbreekt"
 
 
-def test_setup_wizard_does_not_reference_operational_writes():
-    """Guard (#290): the Setup screen must not toggle live control flags."""
+def test_setup_checklist_fixed_backup_is_not_live_prices(tmp_path):
+    ams = ZoneInfo("Europe/Amsterdam")
+    db = str(tmp_path / "ems.sqlite")
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock",
+        settings_store=SettingsStore(db),
+        price_source=FixedTariffPriceSource(0.28, tz=ams),
+        tz=ams,
+    )
+    with TestClient(app) as c:
+        body = c.get("/api/setup/checklist").json()
+    prices = next(i for i in body["items"] if i["key"] == "prices")
+    assert prices["status"] == "Ontbreekt"
+
+
+def _setup_tsx_text() -> str:
     root = __file__.replace("/ems/tests/test_setup_checklist.py", "")
     setup_tsx = f"{root}/ems/web/frontend/src/Setup.tsx"
-    text = open(setup_tsx, encoding="utf-8").read()
+    return open(setup_tsx, encoding="utf-8").read()
+
+
+def test_setup_checklist_load_render_does_not_post():
+    """Guard (#290/#291): checklist fetch/render never POSTs or toggles control flags."""
+    text = _setup_tsx_text()
     assert "control.operational" not in text
     assert "control.dry_run" not in text
-    assert "/api/setup/settings" not in text
-    assert "method: \"POST\"" not in text
+    load_end_marker = "}, [fetchGen]);"
+    load_end = text.find(load_end_marker)
+    assert load_end != -1
+    load_start = text.rfind("useEffect(", 0, load_end)
+    assert load_start != -1
+    load_block = text[load_start : load_end + len(load_end_marker)]
+    assert "loadChecklist()" in load_block
+    assert 'method: "POST"' not in load_block
+    assert "method: 'POST'" not in load_block
+    import re
+
+    for block in re.findall(r"useEffect\(\(\) => \{.*?\}, \[[^\]]*\]\);", text, re.DOTALL):
+        assert 'method: "POST"' not in block
+        assert "method: 'POST'" not in block
+
+
+def test_setup_wizard_post_targets_are_allowlisted():
+    """Guard (#291 AC 14): wizard writes only via setup settings + supervised restart."""
+    import re
+
+    text = _setup_tsx_text()
+    assert "control.operational" not in text
+    assert "control.dry_run" not in text
+    post_targets = set(
+        re.findall(
+            r'apiFetch\(\s*["\'](/api/[^"\']+)["\'][^)]*method:\s*["\']POST["\']',
+            text,
+        ),
+    )
+    assert post_targets == {"/api/setup/settings", "/api/system/restart"}

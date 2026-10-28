@@ -1,20 +1,26 @@
 """Advisory-only cheapest contiguous start window for appliances (#227 / epic #222, #333).
 
-Pure — no clock reads, no I/O, never starts a device and never touches the battery.
-Window score = Σ (effective €/kWh) × kWh/slot, with solar surplus (P50 − load) valued at
-``economics.export_value``. Penalties apply for GRID_CHARGE plan overlap and fuse pressure.
+Window proposals do not read a clock and do not start a device.
+Accepted-window helpers (#334) only read and write the KV cache — still no device commands
+and no battery writes. Window score = Σ (effective €/kWh) × kWh/slot, with solar surplus
+(P50 − load) valued at ``economics.export_value``. Penalties apply for plan overlap
+and fuse pressure.
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import math
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Protocol
+from datetime import UTC, datetime, timedelta
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from ems.planner.economics import export_value
+
+_log = logging.getLogger(__name__)
 
 SLOT = timedelta(minutes=15)
 SLOT_HOURS = 0.25
@@ -443,6 +449,290 @@ def propose_start_window(
 
 def assumed_kwh_for_kind(kind: str) -> float:
     return _ASSUMED_KWH.get(str(kind), 1.0)
+
+
+# One KV row for every accepted window (#334). Expiry of the row is the latest window end;
+# each window is also dropped as soon as its own end is reached, so a later appliance does
+# not keep an earlier bump alive. The planner only reads this blob.
+ACCEPTED_WINDOWS_KEY = "consumer_advice:accepted"
+
+
+def bump_w_for_assumed(assumed_kwh: float, slots: int) -> float:
+    """Average watts of ``assumed_kwh`` spread evenly over ``slots`` quarter-hours.
+
+    ``W = (kWh / slots) / 0.25 h × 1000``. Never negative. Bad inputs yield 0.
+    """
+    if isinstance(slots, bool) or isinstance(assumed_kwh, bool):
+        return 0.0
+    try:
+        count = int(slots)
+        kwh = float(assumed_kwh)
+    except (TypeError, ValueError):
+        return 0.0
+    if count <= 0 or kwh <= 0 or not math.isfinite(kwh):
+        return 0.0
+    watts = kwh / count / SLOT_HOURS * 1000.0
+    if not math.isfinite(watts) or watts <= 0.0:
+        return 0.0
+    return watts
+
+
+def _as_utc(dt: datetime) -> datetime:
+    return dt.astimezone(UTC)
+
+
+def _coerce_now(clock: Any) -> datetime | None:
+    try:
+        if clock is None:
+            return None
+        reader = getattr(clock, "now_utc", None)
+        now = reader() if callable(reader) else clock() if callable(clock) else None
+        if not isinstance(now, datetime) or now.tzinfo is None:
+            return None
+        return _as_utc(now)
+    except Exception:
+        _log.debug("accepted start window clock unreadable", exc_info=True)
+        return None
+
+
+def _parse_record(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        start = datetime.fromisoformat(str(raw.get("start")))
+        end = datetime.fromisoformat(str(raw.get("end")))
+        slots = raw.get("slots")
+        kwh = raw.get("assumed_kwh")
+    except (TypeError, ValueError):
+        return None
+    if (
+        not isinstance(start, datetime) or start.tzinfo is None
+        or not isinstance(end, datetime) or end.tzinfo is None
+    ):
+        return None
+    if isinstance(slots, bool) or isinstance(kwh, bool):
+        return None
+    try:
+        count = int(slots)
+        assumed = float(kwh)
+    except (TypeError, ValueError):
+        return None
+    start_utc = _as_utc(start)
+    end_utc = _as_utc(end)
+    if end_utc <= start_utc or (end_utc - start_utc) % SLOT != timedelta(0):
+        return None
+    if int((end_utc - start_utc) // SLOT) != count:
+        return None
+    watts = bump_w_for_assumed(assumed, count)
+    if watts <= 0.0:
+        return None
+    return {
+        "start": start_utc,
+        "end": end_utc,
+        "slots": count,
+        "assumed_kwh": assumed,
+        "bump_w": watts,
+    }
+
+
+def _read_blob(cache_store: Any) -> dict[str, Any]:
+    if cache_store is None:
+        return {}
+    raw = cache_store.get(ACCEPTED_WINDOWS_KEY)
+    if raw is None or raw == "":
+        return {}
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        return {}
+    return parsed
+
+
+def _live_windows(cache_store: Any, now: datetime | None) -> dict[str, dict[str, Any]]:
+    """device_id → window still open at ``now``. Fail-soft: any problem yields {}."""
+    try:
+        if now is None:
+            return {}
+        blob = _read_blob(cache_store)
+        live: dict[str, dict[str, Any]] = {}
+        for device_id, rec in blob.items():
+            if not isinstance(device_id, str) or not device_id:
+                continue
+            window = _parse_record(rec)
+            if window is None or window["end"] <= now:
+                continue
+            live[device_id] = window
+        return live
+    except Exception:
+        _log.debug("accepted start window unreadable", exc_info=True)
+        return {}
+
+
+def accepted_load_bump_w(
+    cache_store: Any,
+    starts: list[datetime],
+    clock: Any,
+) -> dict[datetime, float]:
+    """Extra watts (>= 0) to add to each slot start covered by an accepted window.
+
+    Missing cache, bad KV data, or any error → empty (no bump).
+    """
+    try:
+        now = _coerce_now(clock)
+        windows = _live_windows(cache_store, now)
+        if not windows:
+            return {}
+        out: dict[datetime, float] = {}
+        for start in starts:
+            if not isinstance(start, datetime) or start.tzinfo is None:
+                continue
+            instant = _as_utc(start)
+            total = 0.0
+            for window in windows.values():
+                if window["start"] <= instant < window["end"]:
+                    total += window["bump_w"]
+            if total > 0.0:
+                out[start] = total
+        return out
+    except Exception:
+        _log.debug("accepted start window bump failed", exc_info=True)
+        return {}
+
+
+def accepted_windows_revision(cache_store: Any, clock: Any) -> str:
+    """Stable token for the plan-cache key. Empty when nothing accepted is still open."""
+    try:
+        now = _coerce_now(clock)
+        windows = _live_windows(cache_store, now)
+        if not windows:
+            return ""
+        rows = [
+            {
+                "assumed_kwh": windows[device_id]["assumed_kwh"],
+                "device_id": device_id,
+                "end": windows[device_id]["end"].isoformat(),
+                "slots": windows[device_id]["slots"],
+                "start": windows[device_id]["start"].isoformat(),
+            }
+            for device_id in sorted(windows)
+        ]
+        return json.dumps(rows, separators=(",", ":"), sort_keys=True)
+    except Exception:
+        _log.debug("accepted start window revision failed", exc_info=True)
+        return ""
+
+
+def accepted_device_ids(cache_store: Any, now: datetime) -> frozenset[str]:
+    if not isinstance(now, datetime) or now.tzinfo is None:
+        return frozenset()
+    return frozenset(_live_windows(cache_store, _as_utc(now)))
+
+
+def _dump_live(windows: dict[str, dict[str, Any]]) -> str:
+    payload = {
+        device_id: {
+            "start": window["start"].isoformat(),
+            "end": window["end"].isoformat(),
+            "slots": window["slots"],
+            "assumed_kwh": window["assumed_kwh"],
+        }
+        for device_id, window in windows.items()
+    }
+    return json.dumps(payload, sort_keys=True)
+
+
+def _ttl_seconds(windows: dict[str, dict[str, Any]], now: datetime) -> float:
+    latest = max(window["end"] for window in windows.values())
+    return max(0.001, (latest - now).total_seconds())
+
+
+def _erase_accepted(cache_store: Any) -> None:
+    deleter = getattr(cache_store, "_delete_key", None)
+    if callable(deleter):
+        deleter(ACCEPTED_WINDOWS_KEY)
+        return
+    cache_store.set(ACCEPTED_WINDOWS_KEY, "{}", 0.0)
+
+
+def remember_accepted_window(
+    cache_store: Any,
+    device_id: str,
+    start: datetime,
+    end: datetime,
+    slots: int,
+    assumed_kwh: float,
+    now: datetime,
+) -> None:
+    """Merge one window into the KV blob. Caller has already validated it."""
+    now_utc = _as_utc(now)
+    live = _live_windows(cache_store, now_utc)
+    record = _parse_record({
+        "start": _as_utc(start).isoformat(),
+        "end": _as_utc(end).isoformat(),
+        "slots": slots,
+        "assumed_kwh": assumed_kwh,
+    })
+    if record is None:
+        raise ValueError("accepted window is not a positive load bump")
+    live[device_id] = record
+    cache_store.set(ACCEPTED_WINDOWS_KEY, _dump_live(live), _ttl_seconds(live, now_utc))
+
+
+def forget_accepted_window(cache_store: Any, device_id: str, now: datetime) -> bool:
+    """Drop one device. True when an open window was removed."""
+    now_utc = _as_utc(now) if isinstance(now, datetime) and now.tzinfo is not None else None
+    live = _live_windows(cache_store, now_utc)
+    if device_id not in live:
+        return False
+    del live[device_id]
+    if not live:
+        _erase_accepted(cache_store)
+        return True
+    cache_store.set(ACCEPTED_WINDOWS_KEY, _dump_live(live), _ttl_seconds(live, now_utc))
+    return True
+
+
+def classify_accept_window(
+    window: object,
+    *,
+    now: datetime,
+    price_starts: set[datetime],
+) -> tuple[datetime, datetime, int] | str:
+    """``(start, end, slots)`` in UTC, or ``past`` / ``horizon`` / ``invalid``."""
+    if not isinstance(window, dict) or now.tzinfo is None:
+        return "invalid"
+    try:
+        start = datetime.fromisoformat(str(window.get("start")))
+        end = datetime.fromisoformat(str(window.get("end")))
+    except (TypeError, ValueError):
+        return "invalid"
+    if start.tzinfo is None or end.tzinfo is None:
+        return "invalid"
+    start = _as_utc(start)
+    end = _as_utc(end)
+    now_utc = _as_utc(now)
+    if start < now_utc or end <= now_utc:
+        return "past"
+    if end <= start or (end - start) % SLOT != timedelta(0):
+        return "invalid"
+    if start.second or start.microsecond or start.minute % 15:
+        return "invalid"
+    slots = int((end - start) // SLOT)
+    if slots <= 0 or slots > 96 * 3:
+        return "invalid"
+    if "slots" in window and window.get("slots") is not None:
+        declared = window.get("slots")
+        if isinstance(declared, bool) or not isinstance(declared, int) or declared != slots:
+            return "invalid"
+    known = set()
+    for slot_start in price_starts:
+        if isinstance(slot_start, datetime) and slot_start.tzinfo is not None:
+            known.add(_as_utc(slot_start))
+    cursor = start
+    while cursor < end:
+        if cursor not in known:
+            return "horizon"
+        cursor += SLOT
+    return start, end, slots
 
 
 def _setting_float(settings: dict, key: str, default: float) -> float:

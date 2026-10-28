@@ -12,6 +12,76 @@ const CSP =
   "base-uri 'self'; " +
   "frame-ancestors 'none'";
 
+const AMSTERDAM_TZ = "Europe/Amsterdam";
+
+/** Civil calendar date (YYYY-MM-DD) in Europe/Amsterdam for an instant. */
+function amsterdamCalendarDate(instant: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: AMSTERDAM_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(instant);
+}
+
+function parseYmd(ymd: string): { y: number; m: number; d: number } {
+  const [y, m, d] = ymd.split("-").map((part) => Number(part));
+  return { y, m, d };
+}
+
+function amsterdamLocalHourMinute(instant: Date): { hour: number; minute: number } {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: AMSTERDAM_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(instant);
+  const hour = Number(parts.find((p) => p.type === "hour")!.value);
+  const minute = Number(parts.find((p) => p.type === "minute")!.value);
+  return { hour, minute };
+}
+
+/** UTC epoch ms of local midnight at the start of civil day y-m-d in Amsterdam. */
+function amsterdamMidnightUtcMs(y: number, month: number, day: number): number {
+  const target = `${y}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  const lo = Date.UTC(y, month - 1, day - 1, 0, 0, 0);
+  const hi = Date.UTC(y, month - 1, day + 2, 0, 0, 0);
+  for (let t = lo; t < hi; t += 60_000) {
+    if (amsterdamCalendarDate(new Date(t)) !== target) continue;
+    const { hour, minute } = amsterdamLocalHourMinute(new Date(t));
+    if (hour === 0 && minute === 0) return t;
+  }
+  throw new Error(`Amsterdam midnight not found for ${target}`);
+}
+
+/** 15-minute slots in one Amsterdam local day (92, 96, or 100 on DST transition days). */
+function quarterHourSlotsInAmsterdamDay(y: number, m: number, d: number): number {
+  const startMs = amsterdamMidnightUtcMs(y, m, d);
+  const nextYmd = addCivilCalendarDay(`${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`);
+  const next = parseYmd(nextYmd);
+  const endMs = amsterdamMidnightUtcMs(next.y, next.m, next.d);
+  return (endMs - startMs) / (15 * 60 * 1000);
+}
+
+function addCivilCalendarDay(ymd: string): string {
+  const { y, m, d } = parseYmd(ymd);
+  const dt = new Date(Date.UTC(y, m - 1, d + 1));
+  const yy = dt.getUTCFullYear();
+  const mm = dt.getUTCMonth() + 1;
+  const dd = dt.getUTCDate();
+  return `${yy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+}
+
+/** MockPriceSource horizon: two complete local days from today's midnight (ems/sources/prices.py). */
+function expectedMockPriceSlotCount(anchorYmd: string): number {
+  const { y, m, d } = parseYmd(anchorYmd);
+  const nextYmd = addCivilCalendarDay(anchorYmd);
+  const next = parseYmd(nextYmd);
+  return (
+    quarterHourSlotsInAmsterdamDay(y, m, d) + quarterHourSlotsInAmsterdamDay(next.y, next.m, next.d)
+  );
+}
+
 test.describe("EMS API", () => {
   test("favicon is served (no console 404)", async ({ request }) => {
     const r = await request.get("/favicon.svg");
@@ -96,9 +166,13 @@ test.describe("EMS API", () => {
   });
 
   test("prices returns 15-min slots and a current price", async ({ request }) => {
+    const amsterdamBefore = amsterdamCalendarDate(new Date());
     const b = await (await request.get("/api/prices")).json();
+    const amsterdamAfter = amsterdamCalendarDate(new Date());
     expect(b.resolution).toBe("quarter_hourly");
-    expect(b.slots.length).toBe(192);
+    const anchorDay = amsterdamCalendarDate(new Date(b.slots[0].start));
+    expect(new Set([amsterdamBefore, amsterdamAfter]).has(anchorDay)).toBe(true);
+    expect(b.slots.length).toBe(expectedMockPriceSlotCount(anchorDay));
     expect(typeof b.current_eur_per_kwh).toBe("number");
     expect(b.slots[0]).toHaveProperty("eur_per_kwh");
   });

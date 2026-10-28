@@ -17,15 +17,22 @@ from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
-from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_grid_charge
+from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_cycle_budget, clamp_grid_charge
 from ems.planner.buy_pool import build_buy_pool_info
 from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.ev_load import format_ev_load_reason
+from ems.planner.horizon import slice_price_horizon
+from ems.planner.projection import apply_evening_reserve
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.prices import PriceSlot
 
 _log = logging.getLogger("ems.planner.rule_based")
 _DH = 0.25  # hours per 15-min slot
+
+
+def stale_discharge_floor_soc(reserve_soc_pct: float, *, buffer_pp: float) -> float:
+    """Discharge floor with stale-meter buffer (#332); does not raise charge targets."""
+    return min(100.0, max(0.0, float(reserve_soc_pct)) + max(0.0, float(buffer_pp)))
 
 
 def late_pack_charge_starts(
@@ -99,6 +106,14 @@ class PlannerConfig:
     # #317: hard daily grid-buy cap. already_bought is today's history (None = unknown).
     max_daily_grid_charge_kwh: float = 12.0
     already_bought_today_kwh: float | None = 0.0
+    max_cycles_per_day: float = 1.5
+    charged_today_kwh: float | None = 0.0
+    discharged_today_kwh: float | None = 0.0
+    # #319 / F-04. 0 leaves build_plan unchanged. The live service passes
+    # planner.daily_min_savings_eur (settings default €0.20).
+    daily_min_savings_eur: float = 0.0
+    # #324 / F-15: 0 = automatic; when > 0, ``min(auto_max_buy, cap)``.
+    max_buy_eur_per_kwh: float = 0.0
     site_tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Europe/Amsterdam"))
 
 
@@ -131,6 +146,7 @@ def plan_rule_based(
     reserve_soc_pct: float = 10.0,
     max_charge_w: float = 4000.0,
     expected_ev_kwh: float = 0.0,
+    max_discharge_w: float | None = None,
 ) -> Plan:
     """Winter arbitrage: charge the cheap window, discharge the profitable peaks. When a load
     profile + battery sizing are supplied it is **demand-sized** (energy review P1.2): the cheap-
@@ -145,19 +161,26 @@ def plan_rule_based(
     turned into a charge slot afterwards — you are *paid* to consume — even outside a normal cheap
     window and even on a no-trade day (`_soak_negative`)."""
     cfg = cfg or PlannerConfig()
+    discharge_w = max_charge_w if max_discharge_w is None else max_discharge_w
     plan = _plan_winter(
         prices, now, cfg, soc_pct=soc_pct, load_w_by=load_w_by, usable_kwh=usable_kwh,
         reserve_soc_pct=reserve_soc_pct, max_charge_w=max_charge_w,
-        expected_ev_kwh=expected_ev_kwh,
+        expected_ev_kwh=expected_ev_kwh, max_discharge_w=discharge_w,
     )
     if cfg.negative_price_soak:
         plan = _soak_negative(plan, prices, cfg, max_charge_w=max_charge_w)
     # After soak so negative-price slots spend the same daily cap (Besluit #317).
     # Cap unit is AC grid kWh, not the DC `stored_kwh_per_slot` the planner sizes with.
-    return clamp_grid_charge(
+    capped = clamp_grid_charge(
         plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh,
         ac_grid_kwh_per_slot(max_charge_w),
         tz=cfg.site_tz,
+    )
+    return clamp_cycle_budget(
+        capped, cfg.charged_today_kwh, cfg.discharged_today_kwh,
+        cfg.max_cycles_per_day, usable_kwh,
+        round_trip_efficiency=cfg.round_trip_efficiency,
+        charge_fallback_w=max_charge_w, tz=cfg.site_tz,
     )
 
 
@@ -172,9 +195,12 @@ def _plan_winter(
     reserve_soc_pct: float,
     max_charge_w: float,
     expected_ev_kwh: float = 0.0,
+    max_discharge_w: float = 4000.0,
 ) -> Plan:
     """Base winter arbitrage plan (no soak): profitability gate, demand- or fixed-count charge."""
-    horizon = [p for p in prices if p.start + SLOT > now][: cfg.horizon_slots]
+    horizon = slice_price_horizon(
+        prices, now, cfg.site_tz, fallback_slots=cfg.horizon_slots,
+    )
     if not horizon:
         return Plan(created_at=now, slots=(), strategy="winter")
 
@@ -236,12 +262,14 @@ def _plan_winter(
         # earliest-of-cheapest-set) so max-power execution does not fill early medium-cheap hours
         # when a deeper valley still lies ahead of the peak deadline.
         last_need = max(discharge_set)
-        peak_min = min(_effective_import_price(p, cfg) for p in horizon if p.start in discharge_set)
-        # Inverse of economics.breakeven: solved for the highest charge price that still undercuts
-        # `peak_min` after losses + wear + risk. Kept local — it's the reverse direction (sizing the
-        # buy pool), not the forward break-even gate above.
-        max_buy = (peak_min - cfg.degradation_eur_per_kwh
-                   - cfg.risk_margin_eur_per_kwh) * cfg.round_trip_efficiency
+        # Buy ceiling is the shared inverse of breakeven (F-08/F-10): the dearest pre-peak price
+        # that still undercuts the cheapest profitable peak after losses, wear and risk.
+        peak_price = min(
+            _effective_import_price(p, cfg) for p in horizon if p.start in discharge_set
+        )
+        max_buy = economics.max_buy_for_planner_config(peak_price, cfg)
+        auto_max_buy = max_buy
+        max_buy = economics.apply_max_buy_cap(max_buy, cfg.max_buy_eur_per_kwh)
         pre_peak = [p for p in horizon if p.start < last_need]
         pool = [p for p in pre_peak if _effective_import_price(p, cfg) <= max_buy]
         charge_set = late_pack_charge_starts(
@@ -255,6 +283,8 @@ def _plan_winter(
             n_charge=n_charge,
             shortfall_kwh=shortfall_dc,
             max_buy_eur_per_kwh=max_buy,
+            auto_max_buy_eur_per_kwh=auto_max_buy,
+            resident_cap_eur_per_kwh=cfg.max_buy_eur_per_kwh,
             price_of=lambda p: _effective_import_price(p, cfg),
         )
         # Honest partial (#162): commit only to the DC the chosen cheap slots can actually store.
@@ -309,8 +339,16 @@ def _plan_winter(
             intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
             reason = f"self-consumption (€{p.eur_per_kwh:.2f}/kWh)"
         out.append(PlanSlot(p.start, intent, reason, floor_soc=floor))
-    return Plan(created_at=now, slots=tuple(out), strategy="winter", target_soc=target_soc,
+    plan = Plan(created_at=now, slots=tuple(out), strategy="winter", target_soc=target_soc,
                 deadline=first_peak, buy_pool=buy_pool)
+    # #326: keep the evening cluster's deficit above the floor. Charge sizing above is
+    # unchanged — this pass only rewrites morning discharge to a hold.
+    return apply_evening_reserve(
+        plan, start_soc_pct=soc_pct, load_w_by=load_w_by, usable_kwh=usable_kwh,
+        reserve_soc_pct=reserve_soc_pct, max_charge_w=max_charge_w,
+        max_discharge_w=max_discharge_w, round_trip_efficiency=cfg.round_trip_efficiency,
+        site_tz=cfg.site_tz,
+    )
 
 
 def _soak_negative(

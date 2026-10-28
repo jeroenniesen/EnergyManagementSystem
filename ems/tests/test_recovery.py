@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 from ems.domain import BatteryIntent, CapabilityReport
 from ems.planner.charge_need import stored_kwh_per_slot
+from ems.planner.economics import max_buy_for_peak, max_buy_for_planner_config
 from ems.planner.projection import BatteryModel, ProjectedSlot, project_energy
 from ems.planner.recovery import (
     BEHIND,
@@ -21,6 +22,7 @@ from ems.planner.recovery import (
     check_charge_completion,
     recover_if_needed,
 )
+from ems.planner.rule_based import PlannerConfig
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.planner.validator import validate_plan
 from ems.sources.prices import PriceSlot
@@ -364,3 +366,27 @@ def test_catch_up_respects_daily_grid_charge_cap():
     charged = [s for s in result.plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
     assert sum(s.target_kwh or 0.0 for s in charged) <= 12.0 + 1e-6
     assert any(s.reason == "Dagplafond 12 kWh bereikt" for s in result.plan.slots)
+
+
+def test_catch_up_buy_ceiling_matches_winter_helper():
+    """Same peak, wear, risk and RTE: recovery buys only what winter's ceiling allows."""
+    peak, rte, deg, risk = 0.40, 0.85, 0.03, 0.01
+    ceiling = max_buy_for_peak(peak, rte=rte, deg=deg, risk=risk)
+    assert ceiling == max_buy_for_planner_config(
+        peak, PlannerConfig(
+            round_trip_efficiency=rte, degradation_eur_per_kwh=deg, risk_margin_eur_per_kwh=risk,
+        ),
+    )
+    plan = _committed_plan(charge_idx=(), end_idx=10, peak=(8,), deadline=T0 + 8 * SLOT)
+    prices = [_price(i, 0.40 if i == 8 else (0.30 if i == 2 else (0.31 if i == 3 else 0.90)))
+              for i in range(10)]
+    caught = _build(
+        70.0, plan, prices, round_trip_efficiency=rte,
+        degradation_eur_per_kwh=deg, risk_margin_eur_per_kwh=risk,
+    )
+    charge_px = {
+        prices[int((s.start - T0) / SLOT)].eur_per_kwh
+        for s in caught.plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+    }
+    assert charge_px == {0.30}
+    assert all(px <= ceiling for px in charge_px)
